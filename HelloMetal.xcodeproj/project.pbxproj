@@ -33,7 +33,7 @@
 		D2A5F2081F4A9144005CD714 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		D2A5F20A1F4A9144005CD714 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D2A5F20F1F4A9144005CD714 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		D2A5F2201F4A96D0005CD714 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D2A5F2201F4A96D0005CD714 /* AppDelegate.swift */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; tabWidth = 4; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +79,7 @@
 			children = (
 				D2A5F2201F4A96D0005CD714 /* AppDelegate.swift */,
 				4374F55F213C0EC0006ABEA0 /* ViewController.swift */,
+				30DFEE8D22709A45000AB7E8 /* FlockView.swift */,
 				3058DE2022686FD600CF7E5D /* Shaders.metal */,
 				D2A5F2071F4A9144005CD714 /* Main.storyboard */,
 				D2A5F20A1F4A9144005CD714 /* Assets.xcassets */,
@@ -87,7 +88,6 @@
 				30954E842268EA2800FC72B1 /* Loki */,
 				30DFEE8922707BDC000AB7E8 /* PerlinGenerator.swift */,
 				30DFEE8B227091CE000AB7E8 /* SettingsView.swift */,
-				30DFEE8D22709A45000AB7E8 /* FlockView.swift */,
 			);
 			path = HelloMetal;
 			sourceTree = "<group>";
@@ -309,6 +309,7 @@
 				INFOPLIST_FILE = "$(SRCROOT)/HelloMetal/Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 12.2;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				PRODUCT_BUNDLE_IDENTIFIER = com.razeware.hellometal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

@@ -80,7 +80,7 @@ kernel void boid_separation(device Boid* boid_array [[ buffer(0) ]], const devic
             float dist = distance(boid_array[id].position, boid_array[i].position);
             float3 directionVector = boid_array[id].position - boid_array[i].position;
 
-            steering += directionVector / pow(max(1.0, dist), 2);
+            steering += directionVector * (1 / dist); // / pow(dist, 2);
             neighbor_count++;
         }
     }
@@ -113,6 +113,10 @@ kernel void boid_alignment(device Boid* boid_array [[ buffer(0) ]], const device
         }
     }
 
+    if (neighbor_count == 0) {
+        return;
+    }
+
     steering /= neighbor_count;
     steering *= settings->alignmentStrength; // 0.001
 //    steering = normalize(steering) * maxSpeed;
@@ -135,7 +139,7 @@ kernel void boid_cohesion(device Boid* boid_array [[ buffer(0) ]], const device 
         if (is_neighbor(boid_array, id, i, settings->cohesionRange)) { // 0.2
             float3 delta = boid_array[i].position - boid_array[id].position;
             float dist = distance(boid_array[i].position, boid_array[id].position);
-            steering += delta / pow(dist, 1.5);
+            steering += delta * (1 / dist);
             neighbor_count++;
         }
     }
@@ -225,6 +229,119 @@ kernel void boid_movement(device Boid* boid_array [[ buffer(0) ]], const device 
 //    boid_array[index].position -= separationVector;
 //}
 
+kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
+    uint id = boid_id(gid, grid_dimensions);
+    if (id >= *boid_count) return;
+
+    // TODO Change the friends every n-th iteration instead of every time
+
+    float width = 2.0;
+    float height = 2.0;
+
+    float scale = 0.91 / 1024.0; // / 512;
+    float friendRadius = 60.0 * scale;
+    float crowdRadius = friendRadius / 1.3;
+    float avoidRadius = 90.0 * scale;
+    float cohesionRadius = friendRadius * 50;// * 100;
+    float maxVelocity = 2.1 * scale;
+
+    // Step 1: Wrap around at the screen edges
+    while (boid_array[id].position.x > width / 2) {
+        boid_array[id].position.x -= width;
+    }
+
+    while (boid_array[id].position.x < -(width / 2)) {
+        boid_array[id].position.x += width;
+    }
+
+    while (boid_array[id].position.y > height / 2) {
+        boid_array[id].position.y -= height;
+    }
+
+    while (boid_array[id].position.y < -(height / 2)) {
+        boid_array[id].position.y += height;
+    }
+
+    // Step 2-5: Iterate over all neighbors
+    float3 alignmentDirection = float3(0, 0, 0);
+    float3 separationDirection = float3(0, 0, 0);
+    float3 cohesionDirection = float3(0, 0, 0);
+
+    uint alignmentCount = 0;
+    uint separationCount = 0;
+    uint cohesionCount = 0;
+
+    for (uint i = 0; i < *boid_count; i++) {
+        float3 directionVector = boid_array[id].position - boid_array[i].position;
+        float d = abs(distance(boid_array[id].position, boid_array[i].position));
+
+        // Step 2: Calculate alignment
+        if (d > 0 && d < friendRadius && length(boid_array[i].velocity) > 0) {
+            alignmentDirection += normalize(boid_array[i].velocity) / d;
+            alignmentCount++;
+        }
+
+        // Step 3: Calculate separation
+        if (d > 0 && d < crowdRadius) {
+            separationDirection += normalize(directionVector) / d;
+            separationCount++;
+        }
+
+        // Step 4: Calculate cohesion
+        if (d > 0 && d < cohesionRadius) {
+            cohesionDirection += boid_array[i].position;
+            cohesionCount++;
+        }
+    }
+
+    // Step 5: Do post-processing on the values from Steps 2-4
+    if (alignmentCount > 0) alignmentDirection /= alignmentCount;
+    if (separationCount > 0) separationDirection /= separationCount;
+
+    if (cohesionCount > 0) {
+        cohesionDirection /= cohesionCount;
+        cohesionDirection -= boid_array[id].position;
+        cohesionDirection = normalize(cohesionDirection) * 0.05;
+    }
+
+    // Step 6: Calculate noise
+
+    // Step 7: Scale calculated values
+    alignmentDirection *= scale * 0.001;
+    separationDirection *= scale * 0.002;
+    cohesionDirection *= scale;
+
+    // Interlude: Wait for all threads before mutating ourselves
+    threadgroup_barrier(mem_flags::mem_device);
+
+    // Step 8: Add values to velocity
+    boid_array[id].velocity += alignmentDirection;
+    boid_array[id].velocity += separationDirection;
+    boid_array[id].velocity += cohesionDirection;
+    // TODO Add noise and avoidance
+
+    // Step 9: Limit velocity
+    if (length(boid_array[id].velocity) > maxVelocity) {
+        boid_array[id].velocity = normalize(boid_array[id].velocity) * maxVelocity;
+    }
+
+    // Step 10: Apply velocity to position
+    boid_array[id].position += boid_array[id].velocity;
+    boid_array[id].position.z = 0.0;
+}
+
+float3 rotate(float3 vector, float byAngle) {
+    return float3(
+        vector.x * cos(byAngle) - vector.y * sin(byAngle),
+        vector.x * sin(byAngle) + vector.y * cos(byAngle),
+        vector.z
+    );
+}
+
+float angle(float3 ofVector) {
+    return atan2(ofVector.y, ofVector.x);
+}
+
 kernel void boid_to_triangles(device packed_float3* vertex_array [[ buffer(0) ]], const device Boid* boid_array [[ buffer(1) ]], const device uint* boid_count [[ buffer(2) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
     uint index = boid_id(gid, grid_dimensions);
     if (index >= *boid_count) return;
@@ -232,16 +349,18 @@ kernel void boid_to_triangles(device packed_float3* vertex_array [[ buffer(0) ]]
     Boid b = boid_array[index];
     float3 position = b.position;
 
-    float size = 0.003;
+    float size = 0.005;
 
-    float3 top = float3(position.x, position.y + size, position.z);
-    float3 bottomLeft = float3(position.x + size / 2, b.position.y - size, position.z);
-    float3 bottomRight = float3(position.x - size / 2, b.position.y - size, position.z);
+    float3 top = float3(0, size, 0);
+    float3 bottomLeft = float3(size / 2, -size, 0);
+    float3 bottomRight = float3(-size / 2, -size, 0);
+
+    float heading = angle(b.velocity) - M_PI_2_H;
 
     uint output_index = index * 3;
-    vertex_array[output_index] = top;
-    vertex_array[output_index + 1] = bottomLeft;
-    vertex_array[output_index + 2] = bottomRight;
+    vertex_array[output_index] = position + rotate(top, heading);
+    vertex_array[output_index + 1] = position + rotate(bottomLeft, heading);
+    vertex_array[output_index + 2] = position + rotate(bottomRight, heading);
 }
 
 vertex float4 boid_vertex(const device packed_float3* vertex_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
@@ -249,5 +368,5 @@ vertex float4 boid_vertex(const device packed_float3* vertex_array [[ buffer(0) 
 }
 
 fragment half4 boid_fragment() {
-    return half4(47 / 256, 53 / 256, 66 / 256, 1.0);
+    return half4(0.18, 0.2, 0.25, 0.5);
 }

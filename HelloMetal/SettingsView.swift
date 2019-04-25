@@ -28,29 +28,50 @@
 
 import UIKit
 
+protocol SettingsViewDelegate: class {
+    func settingsView(_ settingsView: SettingsView, didUpdateSettings: Settings)
+}
+
 class SettingsView: UIView {
     let separationStrengthSlider = UISlider()
     let cohesionStrengthSlider = UISlider()
     let alignmentStrengthSlider = UISlider()
 
-//    let separationRangeSlider = UISlider()
-//    let cohesionRangeSlider = UISlider()
-//    let alignmentRangeSlider = UISlider()
+    let separationRangeSlider = UISlider()
+    let cohesionRangeSlider = UISlider()
+    let alignmentRangeSlider = UISlider()
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    weak var delegate: SettingsViewDelegate?
 
-        let sliders = [
-            ("Separation", separationStrengthSlider),
-            ("Cohesion", cohesionStrengthSlider),
-            ("Alignment", alignmentStrengthSlider)
+    init(settings: Settings) {
+        super.init(frame: .zero)
+
+        separationStrengthSlider.value = settings.separationStrength
+        cohesionStrengthSlider.value = settings.cohesionStrength
+        alignmentStrengthSlider.value = settings.alignmentStrength
+
+        separationRangeSlider.value = settings.separationRange
+        cohesionRangeSlider.value = settings.cohesionRange
+        alignmentRangeSlider.value = settings.alignmentRange
+
+        let sliders: [(String, UISlider, Float)] = [
+            ("Separation", separationStrengthSlider, 0.01),
+            ("Cohesion", cohesionStrengthSlider, 0.01),
+            ("Alignment", alignmentStrengthSlider, 0.01),
+            ("SRange", separationRangeSlider, 1),
+            ("CRange", cohesionRangeSlider, 1),
+            ("ARange", alignmentRangeSlider, 1),
         ]
 
         let sliderStackViews: [UIStackView] = sliders.map {
-            let (label, slider) = $0
+            let (label, slider, _) = $0
             let labelView = UILabel()
             labelView.text = label
-            return UIStackView(arrangedSubviews: [labelView, slider])
+            labelView.widthAnchor.constraint(equalToConstant: 100).isActive = true
+
+            let stackView = UIStackView(arrangedSubviews: [labelView, slider])
+            stackView.spacing = 20
+            return stackView
         }
 
         let stackView = UIStackView(arrangedSubviews: sliderStackViews)
@@ -59,11 +80,31 @@ class SettingsView: UIView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stackView)
         addConstraints([
-            stackView.topAnchor.constraint(equalTo: topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stackView.leftAnchor.constraint(equalTo: leftAnchor),
-            stackView.rightAnchor.constraint(equalTo: rightAnchor)
+            stackView.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            stackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
+            stackView.leftAnchor.constraint(equalTo: leftAnchor, constant: 20),
+            stackView.rightAnchor.constraint(equalTo: rightAnchor, constant: -20)
         ])
+
+        sliders.forEach {
+            $0.1.minimumValue = 0
+            $0.1.maximumValue = $0.2
+
+            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragInside)
+            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragOutside)
+        }
+    }
+
+    @objc func updateSettings() {
+        let settings = Settings(
+            separationStrength: separationStrengthSlider.value,
+            cohesionStrength: cohesionStrengthSlider.value,
+            alignmentStrength: alignmentStrengthSlider.value,
+            separationRange: separationRangeSlider.value,
+            cohesionRange: cohesionRangeSlider.value,
+            alignmentRange: alignmentRangeSlider.value)
+
+        delegate?.settingsView(self, didUpdateSettings: settings)
     }
 
     required init?(coder aDecoder: NSCoder) {
