@@ -57,10 +57,10 @@ class SettingsView: UIView {
         let sliders: [(String, UISlider, Float)] = [
             ("Separation", separationStrengthSlider, 0.01),
             ("Cohesion", cohesionStrengthSlider, 0.01),
-            ("Alignment", alignmentStrengthSlider, 0.01),
-            ("SRange", separationRangeSlider, 1),
-            ("CRange", cohesionRangeSlider, 1),
-            ("ARange", alignmentRangeSlider, 1),
+            ("Alignment", alignmentStrengthSlider, 0.01)
+//            ("SRange", separationRangeSlider, 1),
+//            ("CRange", cohesionRangeSlider, 1),
+//            ("ARange", alignmentRangeSlider, 1),
         ]
 
         let sliderStackViews: [UIStackView] = sliders.map {

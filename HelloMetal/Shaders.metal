@@ -33,7 +33,12 @@ using namespace metal;
 struct Boid {
     packed_float3 position;
     packed_float3 velocity;
-    packed_float3 acceleration;
+    float maxVelocity;
+};
+
+struct InteractionNode {
+    packed_float3 position;
+    float repulsionStrength;
 };
 
 struct Settings {
@@ -46,190 +51,40 @@ struct Settings {
     float alignmentStrength;
 };
 
-__constant float maxSpeed = 0.01;
-//__constant float maxForce = 0.0001;
-
-//uint neighbors_of_boid(device Boid* boid_array, const device uint* boid_count, const uint boid_id, const float perception_range, device uint* neighbors) {
-//    uint count = 0;
-//
-//    for (uint i = 0; i < *boid_count; i++) {
-//        if (i == boid_id || distance(boid_array[boid_id].position, boid_array[i].position) > perception_range) continue;
-//        neighbors[count] = i;
-//    }
-//
-//    return count;
-//}
-
-bool is_neighbor(device Boid* boid_array, const uint boid_id, const uint other_id, const float perception_range) {
-    return other_id != boid_id && distance(boid_array[boid_id].position, boid_array[other_id].position) <= perception_range;
-}
-
 uint boid_id(uint2 gid, uint2 grid_dimensions) {
     return gid.y * grid_dimensions.x + gid.x;
 }
 
-kernel void boid_separation(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], const device Settings* settings [[ buffer(2) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
-    uint id = boid_id(gid, grid_dimensions);
-    if (id >= *boid_count) return;
-
-    uint neighbor_count = 0;
-    float3 steering = float3(0, 0, 0);
-
-    for (uint i = 0; i < *boid_count; i++) {
-        if (is_neighbor(boid_array, id, i, settings->separationRange)) { // 0.05
-            float dist = distance(boid_array[id].position, boid_array[i].position);
-            float3 directionVector = boid_array[id].position - boid_array[i].position;
-
-            steering += directionVector * (1 / dist); // / pow(dist, 2);
-            neighbor_count++;
-        }
-    }
-
-    if (neighbor_count == 0) {
-        return;
-    }
-
-    steering /= neighbor_count;
-    steering *= settings->separationStrength; // 0.01
-//    steering = normalize(steering) * maxSpeed;
-//    steering -= boid_array[id].velocity;
-//    steering = clamp(steering, -maxForce, maxForce);
-
-    // TODO Add a multiplier (ideally passed in through some config)
-    boid_array[id].acceleration += steering;
+float3 rotate(float3 vector, float byAngle) {
+    return float3(
+                  vector.x * cos(byAngle) - vector.y * sin(byAngle),
+                  vector.x * sin(byAngle) + vector.y * cos(byAngle),
+                  vector.z
+                  );
 }
 
-kernel void boid_alignment(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], const device Settings* settings [[ buffer(2) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
-    uint id = boid_id(gid, grid_dimensions);
-    if (id >= *boid_count) return;
-
-    uint neighbor_count = 0;
-    float3 steering = float3(0, 0, 0);
-
-    for (uint i = 0; i < *boid_count; i++) {
-        if (is_neighbor(boid_array, id, i, settings->alignmentRange)) { // 0.15
-            steering += boid_array[i].velocity;
-            neighbor_count++;
-        }
-    }
-
-    if (neighbor_count == 0) {
-        return;
-    }
-
-    steering /= neighbor_count;
-    steering *= settings->alignmentStrength; // 0.001
-//    steering = normalize(steering) * maxSpeed;
-//    steering -= boid_array[id].velocity;
-//    steering = clamp(steering, -maxForce, maxForce);
-
-    // TODO Add a multiplier (ideally passed in through some config)
-    boid_array[id].acceleration += steering;
+float angle(float3 ofVector) {
+    return atan2(ofVector.y, ofVector.x);
 }
 
-
-kernel void boid_cohesion(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], const device Settings* settings [[ buffer(2) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
-    uint id = boid_id(gid, grid_dimensions);
-    if (id >= *boid_count) return;
-
-    uint neighbor_count = 0;
-    float3 steering = float3(0, 0, 0);
-
-    for (uint i = 0; i < *boid_count; i++) {
-        if (is_neighbor(boid_array, id, i, settings->cohesionRange)) { // 0.2
-            float3 delta = boid_array[i].position - boid_array[id].position;
-            float dist = distance(boid_array[i].position, boid_array[id].position);
-            steering += delta * (1 / dist);
-            neighbor_count++;
-        }
-    }
-
-    if (neighbor_count == 0) {
-        return;
-    }
-
-    steering /= neighbor_count;
-    steering *= settings->cohesionStrength; // 0.001
-//    steering -= boid_array[id].position;
-//    steering = normalize(steering) * maxSpeed;
-//    steering -= boid_array[id].velocity;
-//    steering = clamp(steering, -maxForce, maxForce);
-
-    // TODO Add a multiplier (ideally passed in through some config)
-    boid_array[id].acceleration += steering;
+float falloff(float dist, float maximumDistance) {
+    return 1 / dist;
+//    float distancePercentage = dist / maximumDistance;
+//    return 1 - sqrt(distancePercentage);
 }
 
-kernel void boid_wraparound(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
-    uint id = boid_id(gid, grid_dimensions);
-    if (id >= *boid_count) return;
+kernel void boid_flocking(
+        device Boid* boid_array [[ buffer(0) ]],
+        const device uint* boid_count [[ buffer(1) ]],
 
-    if (boid_array[id].position.x > 1) {
-        boid_array[id].position.x = -1;
-    } else if (boid_array[id].position.x < -1) {
-        boid_array[id].position.x = 1;
-    }
+        device InteractionNode* interaction_array [[ buffer(2) ]],
+        const device uint* interaction_count [[ buffer(3) ]],
 
-    if (boid_array[id].position.y > 1) {
-        boid_array[id].position.y = -1;
-    } else if (boid_array[id].position.y < -1) {
-        boid_array[id].position.y = 1;
-    }
-}
+        device Settings* settings [[ buffer(4) ]],
 
-kernel void boid_movement(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
-    uint id = boid_id(gid, grid_dimensions);
-    if (id >= *boid_count) return;
-
-    boid_array[id].position += boid_array[id].velocity;
-    boid_array[id].velocity += boid_array[id].acceleration;
-
-    boid_array[id].velocity = clamp(boid_array[id].velocity, -maxSpeed, maxSpeed);
-    boid_array[id].acceleration = float3(0, 0, 0); // -normalize(boid_array[id].position) * 0.0001;
-
-    boid_array[id].position.z = 0.0;
-}
-
-//kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], uint2 gid [[thread_position_in_grid]]) {
-//    uint index = gid.x;
-//
-//    // TODO Prevent this from becoming a copy
-//    Boid ownBoid = boid_array[index];
-//
-//    float perceptionThreshold = 0.51;
-//    float separationDistance = 0.1;
-//
-//    float3 cohesionVector = float3(0, 0, 0);
-//    float3 separationVector = float3(0, 0, 0);
-//
-//    for (uint i = 0; i < *boid_count; i++) {
-//        if (i == index) continue;
-//
-//        Boid otherBoid = boid_array[i];
-//
-//        float3 directionVector = float3(otherBoid.position.x - ownBoid.position.x, otherBoid.position.y - ownBoid.position.y, otherBoid.position.z - ownBoid.position.z);
-//        float dist = distance(ownBoid.position, otherBoid.position);
-//
-//        if (dist > perceptionThreshold) continue;
-//
-//        // Calculate the cohesion
-//        float3 normalizedDirectionVector = normalize(directionVector);
-//        cohesionVector += normalizedDirectionVector * 0.001;
-//
-//        // Calculate the separation
-//        if (dist < separationDistance) {
-//            separationVector += normalizedDirectionVector * 0.002;
-//        }
-//
-//        // Calculate the alignment
-//
-//        continue;
-//    }
-//
-//    boid_array[index].position += cohesionVector;
-//    boid_array[index].position -= separationVector;
-//}
-
-kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device uint* boid_count [[ buffer(1) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
+        uint2 gid [[thread_position_in_grid]],
+        uint2 grid_dimensions [[threads_per_grid]])
+{
     uint id = boid_id(gid, grid_dimensions);
     if (id >= *boid_count) return;
 
@@ -242,24 +97,41 @@ kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device 
     float friendRadius = 60.0 * scale;
     float crowdRadius = friendRadius / 1.3;
     float avoidRadius = 90.0 * scale;
-    float cohesionRadius = friendRadius * 50;// * 100;
-    float maxVelocity = 2.1 * scale;
+    float cohesionRadius = friendRadius * 5; // 50;
+    float maxVelocity = boid_array[id].maxVelocity * scale; // 2.1 * scale;
 
     // Step 1: Wrap around at the screen edges
-    while (boid_array[id].position.x > width / 2) {
-        boid_array[id].position.x -= width;
-    }
+    bool doWrap = false;
+    if (doWrap) {
+        while (boid_array[id].position.x > width / 2) {
+            boid_array[id].position.x -= width;
+        }
 
-    while (boid_array[id].position.x < -(width / 2)) {
-        boid_array[id].position.x += width;
-    }
+        while (boid_array[id].position.x < -(width / 2)) {
+            boid_array[id].position.x += width;
+        }
 
-    while (boid_array[id].position.y > height / 2) {
-        boid_array[id].position.y -= height;
-    }
+        while (boid_array[id].position.y > height / 2) {
+            boid_array[id].position.y -= height;
+        }
 
-    while (boid_array[id].position.y < -(height / 2)) {
-        boid_array[id].position.y += height;
+        while (boid_array[id].position.y < -(height / 2)) {
+            boid_array[id].position.y += height;
+        }
+    } else {
+        if (boid_array[id].position.x > width / 2) {
+            boid_array[id].position.x = width / 2;
+            boid_array[id].velocity.x *= -1.0;
+        } else if (boid_array[id].position.x < -(width / 2)) {
+            boid_array[id].position.x = -(width / 2);
+            boid_array[id].velocity.x *= -1.0;
+        } else if (boid_array[id].position.y > height / 2) {
+            boid_array[id].position.y = height / 2;
+            boid_array[id].velocity.y *= -1.0;
+        } else if (boid_array[id].position.y < -(height / 2)) {
+            boid_array[id].position.y = -(height / 2);
+            boid_array[id].velocity.y *= -1.0;
+        }
     }
 
     // Step 2-5: Iterate over all neighbors
@@ -272,31 +144,60 @@ kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device 
     uint cohesionCount = 0;
 
     for (uint i = 0; i < *boid_count; i++) {
+        float d = distance(boid_array[id].position, boid_array[i].position);
         float3 directionVector = boid_array[id].position - boid_array[i].position;
-        float d = abs(distance(boid_array[id].position, boid_array[i].position));
 
-        // Step 2: Calculate alignment
-        if (d > 0 && d < friendRadius && length(boid_array[i].velocity) > 0) {
-            alignmentDirection += normalize(boid_array[i].velocity) / d;
-            alignmentCount++;
-        }
+        if (d > 0) {
+            // Step 2: Calculate alignment
+            if (d < friendRadius && length(boid_array[i].velocity) > 0) {
+                alignmentDirection += normalize(boid_array[i].velocity) * falloff(d, friendRadius); // / d;
+                alignmentCount++;
+            }
 
-        // Step 3: Calculate separation
-        if (d > 0 && d < crowdRadius) {
-            separationDirection += normalize(directionVector) / d;
-            separationCount++;
-        }
+            // Step 3: Calculate separation
+            if (d < crowdRadius && length(directionVector) > 0) {
+                separationDirection += normalize(directionVector) * falloff(d, crowdRadius); // / d;
+                separationCount++;
+            }
 
-        // Step 4: Calculate cohesion
-        if (d > 0 && d < cohesionRadius) {
-            cohesionDirection += boid_array[i].position;
-            cohesionCount++;
+            // Step 4: Calculate cohesion
+            if (d < cohesionRadius) {
+                cohesionDirection += boid_array[i].position;
+                cohesionCount++;
+            }
         }
     }
 
-    // Step 5: Do post-processing on the values from Steps 2-4
+    // Step 5: Calculate repulsion/adhesion
+    float3 repulsionDirection = float3(0, 0, 0);
+    uint repulsionCount = 0;
+
+    for (uint i = 0; i < *interaction_count; i++) {
+        float d = abs(distance(boid_array[id].position, interaction_array[i].position));
+
+        if (d > 0 && d < avoidRadius && length(boid_array[id].velocity) > 0) {
+            float3 directionVector = boid_array[id].position - interaction_array[i].position;
+
+//            float3 normalizedDirectionVector = normalize(directionVector);
+//            float3 normalizedVelocityVector = normalize(boid_array[id].velocity);
+//
+//            float relativePath = normalizedVelocityVector.x * -normalizedDirectionVector.y + normalizedVelocityVector.y * normalizedDirectionVector.x;
+//            float evasionDirection = relativePath > 0 ? 1.0 : -1.0;
+//
+//            float3 evasionVector = rotate(directionVector, M_PI_2_F * evasionDirection);
+//
+//            repulsionDirection += normalize(evasionVector) / d * interaction_array[i].repulsionStrength;
+
+//            repulsionDirection += directionVector / d * interaction_array[i].repulsionStrength;
+            repulsionDirection += directionVector * falloff(d, avoidRadius) * interaction_array[i].repulsionStrength;
+            repulsionCount++;
+        }
+    }
+
+    // Step 6: Do post-processing on the values from Steps 2-5
     if (alignmentCount > 0) alignmentDirection /= alignmentCount;
     if (separationCount > 0) separationDirection /= separationCount;
+    if (repulsionCount > 0) repulsionDirection /= repulsionCount;
 
     if (cohesionCount > 0) {
         cohesionDirection /= cohesionCount;
@@ -304,45 +205,41 @@ kernel void boid_flocking(device Boid* boid_array [[ buffer(0) ]], const device 
         cohesionDirection = normalize(cohesionDirection) * 0.05;
     }
 
-    // Step 6: Calculate noise
+    // Step 7: Calculate noise
 
-    // Step 7: Scale calculated values
+    // Step 8: Scale calculated values
     alignmentDirection *= scale * 0.001;
     separationDirection *= scale * 0.002;
     cohesionDirection *= scale;
+    repulsionDirection *= scale * 0.3;
 
     // Interlude: Wait for all threads before mutating ourselves
     threadgroup_barrier(mem_flags::mem_device);
 
-    // Step 8: Add values to velocity
+    // Step 9: Add values to velocity
     boid_array[id].velocity += alignmentDirection;
     boid_array[id].velocity += separationDirection;
     boid_array[id].velocity += cohesionDirection;
-    // TODO Add noise and avoidance
+    boid_array[id].velocity += repulsionDirection;
+    // TODO Add noise
 
-    // Step 9: Limit velocity
-    if (length(boid_array[id].velocity) > maxVelocity) {
+    // Step 10: Limit velocity
+    if (length(boid_array[id].velocity) > maxVelocity * 1.5) {
         boid_array[id].velocity = normalize(boid_array[id].velocity) * maxVelocity;
     }
 
-    // Step 10: Apply velocity to position
+    // Step 11: Apply velocity to position
     boid_array[id].position += boid_array[id].velocity;
-    boid_array[id].position.z = 0.0;
+//    boid_array[id].position.z = 0.0;
 }
 
-float3 rotate(float3 vector, float byAngle) {
-    return float3(
-        vector.x * cos(byAngle) - vector.y * sin(byAngle),
-        vector.x * sin(byAngle) + vector.y * cos(byAngle),
-        vector.z
-    );
-}
-
-float angle(float3 ofVector) {
-    return atan2(ofVector.y, ofVector.x);
-}
-
-kernel void boid_to_triangles(device packed_float3* vertex_array [[ buffer(0) ]], const device Boid* boid_array [[ buffer(1) ]], const device uint* boid_count [[ buffer(2) ]], uint2 gid [[thread_position_in_grid]], uint2 grid_dimensions [[threads_per_grid]]) {
+kernel void boid_to_triangles(
+      device packed_float4* vertex_array [[ buffer(0) ]],
+      const device Boid* boid_array [[ buffer(1) ]],
+      const device uint* boid_count [[ buffer(2) ]],
+      uint2 gid [[thread_position_in_grid]],
+      uint2 grid_dimensions [[threads_per_grid]])
+{
     uint index = boid_id(gid, grid_dimensions);
     if (index >= *boid_count) return;
 
@@ -355,18 +252,48 @@ kernel void boid_to_triangles(device packed_float3* vertex_array [[ buffer(0) ]]
     float3 bottomLeft = float3(size / 2, -size, 0);
     float3 bottomRight = float3(-size / 2, -size, 0);
 
-    float heading = angle(b.velocity) - M_PI_2_H;
+    float heading = angle(b.velocity) - M_PI_2_F;
+    float speed = length(b.velocity);
 
     uint output_index = index * 3;
-    vertex_array[output_index] = position + rotate(top, heading);
-    vertex_array[output_index + 1] = position + rotate(bottomLeft, heading);
-    vertex_array[output_index + 2] = position + rotate(bottomRight, heading);
+    vertex_array[output_index] = float4(position + rotate(top, heading), speed);
+    vertex_array[output_index + 1] = float4(position + rotate(bottomLeft, heading), speed);
+    vertex_array[output_index + 2] = float4(position + rotate(bottomRight, heading), speed);
 }
 
-vertex float4 boid_vertex(const device packed_float3* vertex_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
-    return float4(vertex_array[vid], 1.0);
+struct VertexOut {
+    float4 position [[position]];
+    float speed;
+};
+
+vertex VertexOut boid_vertex(const device packed_float4* vertex_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
+    VertexOut out;
+
+    out.position = float4(vertex_array[vid].xyz, 1.0);
+    out.speed = vertex_array[vid].w;
+
+    return out;
 }
 
-fragment half4 boid_fragment() {
-    return half4(0.18, 0.2, 0.25, 0.5);
+fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
+    float colorMultiplier = in.speed * 200;
+    return half4(0.0, colorMultiplier, colorMultiplier, 1.0); // half4(0.18, 0.2, 0.25, 0.5);
+}
+
+struct InteractionVertexOut {
+    float4 position [[position]];
+    float size [[point_size]];
+};
+
+vertex InteractionVertexOut interaction_vertex(const device InteractionNode* interaction_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
+    InteractionVertexOut out;
+
+    out.position = float4(interaction_array[vid].position.xyz, 1.0);
+    out.size = interaction_array[vid].repulsionStrength + 50;
+
+    return out;
+}
+
+fragment half4 interaction_fragment(InteractionVertexOut in [[stage_in]]) {
+    return half4(1.0, 0, 0, 1.0);
 }

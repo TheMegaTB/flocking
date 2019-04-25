@@ -29,18 +29,28 @@
 import UIKit
 import MetalKit
 
+enum BoidSpawnType {
+    case single
+    case perlin
+    case centered
+}
+
 struct Boid {
     let position: (Float, Float, Float)
     let velocity: (Float, Float, Float)
-    let acceleration: (Float, Float, Float)
+    let maxVelocity: Float = 2.1 + pow(Float.random(in: 0...0.25), 2)
 
     static func random() -> Boid {
         return Boid(
             position: (Float.random(in: -1...1), Float.random(in: -1...1), Float.random(in: -1...1)),
-            velocity: (0, 0, 0), // (Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01)),
-            acceleration: (0, 0, 0)
+            velocity: (0, 0, 0) // (Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01)),
         )
     }
+}
+
+struct InteractionNode {
+    var position: (Float, Float, Float)
+    var repulsionStrength: Float
 }
 
 struct Settings {
@@ -76,14 +86,22 @@ class FlockViewController: UIViewController {
     private let commandQueue: MTLCommandQueue!
 
     private let pipelineState: MTLRenderPipelineState!
+    private let interactionPipelineState: MTLRenderPipelineState!
     private let boidGeometryPipelineState: MTLComputePipelineState!
     private var boidPipelines: [MTLComputePipelineState] = []
 
-    private let boidData: [Boid]
-    private let vertexData: [Float]
+    private var boidData: [Boid]
+    private var vertexData: [Float]
+    private var interactionData: [InteractionNode] {
+        didSet {
+            let interactionDataSize = interactionData.count * MemoryLayout.size(ofValue: interactionData[0])
+            interactionBuffer = device.makeBuffer(bytes: interactionData, length: interactionDataSize, options: [])
+        }
+    }
 
     private var boidBuffer: MTLBuffer!
     private var vertexBuffer: MTLBuffer!
+    private var interactionBuffer: MTLBuffer!
 
     private var settings: Settings {
         didSet { settingsBuffer = FlockViewController.createSettingsBuffer(from: settings, on: device) }
@@ -91,13 +109,15 @@ class FlockViewController: UIViewController {
     private var settingsBuffer: MTLBuffer
 
     let metalView: MTKView
+    var spawnType: BoidSpawnType = .centered
 
     public init() {
         device = MTLCreateSystemDefaultDevice()!
         commandQueue = device.makeCommandQueue()!
 
-        boidData = FlockViewController.generateBoidData()
-        vertexData = Array(repeating: 0.0, count: boidData.count * 9)
+        boidData = FlockViewController.generateBoidData(spawnType: spawnType)
+        vertexData = Array(repeating: 0.0, count: boidData.count * 12)
+        interactionData = [InteractionNode(position: (1, 2, 0), repulsionStrength: 1)]
 
         settings = Settings()
         settingsBuffer = FlockViewController.createSettingsBuffer(from: settings, on: device)
@@ -108,19 +128,25 @@ class FlockViewController: UIViewController {
         let vertexDataSize = vertexData.count * MemoryLayout.size(ofValue: vertexData[0])
         vertexBuffer = device.makeBuffer(bytes: vertexData, length: vertexDataSize, options: [])
 
+        let interactionDataSize = interactionData.count * MemoryLayout.size(ofValue: interactionData[0])
+        interactionBuffer = device.makeBuffer(bytes: interactionData, length: interactionDataSize, options: [])
+
         let defaultLibrary = device.makeDefaultLibrary()!
-        let fragmentProgram = defaultLibrary.makeFunction(name: "boid_fragment")
-        let vertexProgram = defaultLibrary.makeFunction(name: "boid_vertex")
 
         let boidGeometryFunction = defaultLibrary.makeFunction(name: "boid_to_triangles")!
         boidGeometryPipelineState = try! device.makeComputePipelineState(function: boidGeometryFunction)
 
         let pipelineStateDescriptor = MTLRenderPipelineDescriptor()
-        pipelineStateDescriptor.vertexFunction = vertexProgram
-        pipelineStateDescriptor.fragmentFunction = fragmentProgram
+        pipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "boid_vertex")
+        pipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "boid_fragment")
         pipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-
         pipelineState = try! device.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+
+        let interactionPipelineStateDescriptor = MTLRenderPipelineDescriptor()
+        interactionPipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "interaction_vertex")
+        interactionPipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "interaction_fragment")
+        interactionPipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        self.interactionPipelineState = try! device.makeRenderPipelineState(descriptor: interactionPipelineStateDescriptor)
 
         metalView = MTKView(frame: .zero, device: device)
         metalView.framebufferOnly = false
@@ -128,11 +154,6 @@ class FlockViewController: UIViewController {
 
         super.init(nibName: nil, bundle: nil)
 
-//        try! addBoidPipelineOfFunction(withName: "boid_wraparound", inLibrary: defaultLibrary)
-//        try! addBoidPipelineOfFunction(withName: "boid_alignment", inLibrary: defaultLibrary)
-//        try! addBoidPipelineOfFunction(withName: "boid_cohesion", inLibrary: defaultLibrary)
-//        try! addBoidPipelineOfFunction(withName: "boid_separation", inLibrary: defaultLibrary)
-//        try! addBoidPipelineOfFunction(withName: "boid_movement", inLibrary: defaultLibrary)
         try! addBoidPipelineOfFunction(withName: "boid_flocking", inLibrary: defaultLibrary)
 
         metalView.delegate = self
@@ -143,7 +164,42 @@ class FlockViewController: UIViewController {
                     blue: 170.0 / 256.0,
                     alpha: 1.0)
 
-//        setupSettings()
+        setupSettings()
+    }
+
+    @objc func resetBoids() {
+        // Reset boids
+        boidData = FlockViewController.generateBoidData(spawnType: spawnType)
+        let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
+        boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
+
+        // Resize vertex buffer
+        vertexData = Array(repeating: 0.0, count: boidData.count * 12)
+        let vertexDataSize = vertexData.count * MemoryLayout.size(ofValue: vertexData[0])
+        vertexBuffer = device.makeBuffer(bytes: vertexData, length: vertexDataSize, options: [])
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        positionInteractionNode(at: touch.location(in: metalView), create: true)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        positionInteractionNode(at: touch.location(in: metalView))
+    }
+
+    func positionInteractionNode(at location: CGPoint, create: Bool = false) {
+        let x = location.x / metalView.frame.width * 2 - 1
+        let y = -(location.y / metalView.frame.height * 2 - 1)
+
+        if create {
+            interactionData.append(
+                InteractionNode(position: (Float(x), Float(y), 0), repulsionStrength: 1)
+            )
+        } else {
+            interactionData[0].position = (Float(x), Float(y), 0)
+        }
     }
 
     func setupSettings() {
@@ -156,6 +212,18 @@ class FlockViewController: UIViewController {
             settingsView.leftAnchor.constraint(equalTo: view.leftAnchor),
             settingsView.rightAnchor.constraint(equalTo: view.rightAnchor),
             settingsView.heightAnchor.constraint(equalToConstant: 200)
+        ])
+
+        let reloadButton = UIButton(type: .system)
+        reloadButton.addTarget(self, action: #selector(resetBoids), for: .touchUpInside)
+        reloadButton.setTitle("Reset boids", for: .normal)
+        reloadButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(reloadButton)
+        view.addConstraints([
+            reloadButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 50),
+            reloadButton.leftAnchor.constraint(equalTo: view.leftAnchor, constant: 50),
+            reloadButton.heightAnchor.constraint(equalToConstant: 50),
+            reloadButton.widthAnchor.constraint(equalToConstant: 100)
         ])
     }
 
@@ -176,56 +244,59 @@ class FlockViewController: UIViewController {
         return device.makeBuffer(bytes: [settings], length: MemoryLayout.size(ofValue: settings), options: [])!
     }
 
-    static func generateBoidData() -> [Boid] {
-        let delta: Float = 0.01
+    static func generateBoidData(spawnType: BoidSpawnType) -> [Boid] {
+        switch spawnType {
+        case .single:
+            return [
+                Boid(position: (0, 0.1, 0), velocity: (0, 0.001, 0)),
+                Boid(position: (0, 0, 0), velocity: (0, 0.001, 0))
+            ]
+        case .centered:
+            let delta: Float = 0.0000001; // 0.01
 
-        return (0..<10000).map { _ in
-            Boid(
-                position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0),
-                velocity: (0, 0, 0),
-                acceleration: (0, 0, 0)
-            )
-        }
+            return (0..<7000).map { _ in
+                Boid(
+                    position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0),
+                    velocity: (0, 0, 0)
+                )
+            }
+        case .perlin:
+            let gridSize = 50
+            let densityMultiplier: Float = 7.0
 
-//        return [
-//            Boid(position: (0.05, 0, 0), velocity: (0, 0, 0), acceleration: (0, 0, 0)),
-//            Boid(position: (-0.05, 0, 0), velocity: (0, 0.001, 0), acceleration: (0, 0, 0))
-//        ]
+            let maximumOffset = 2.0 / Float(gridSize) / 2 // width of 2 divide by number of cell-spaces
+            let noise = PerlinGenerator()
+            noise.octaves = 1
+            noise.zoom = 10
+            noise.persistence = 0
 
-        let gridSize = 50
-        let densityMultiplier: Float = 20.0
+            var boids: [Boid] = []
 
-        let maximumOffset = 2.0 / Float(gridSize) / 2 // width of 2 divide by number of cell-spaces
-        let noise = PerlinGenerator()
-        noise.octaves = 1
-        noise.zoom = 10
-        noise.persistence = 0
+            for x in 0..<gridSize {
+                for y in 0..<gridSize {
+                    let density = abs(noise.perlinNoise(Float(x), y: Float(y), z: 0, t: 0))
+                    let amountOfBoidsAtCurrentLocation = Int(round(density * densityMultiplier))
 
-        var boids: [Boid] = []
+                    (0..<amountOfBoidsAtCurrentLocation).forEach { _ in
+                        let boidX = Float(x) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
+                        let boidY = Float(y) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
 
-        for x in 0..<gridSize {
-            for y in 0..<gridSize {
-                let density = abs(noise.perlinNoise(Float(x), y: Float(y), z: 0, t: 0))
-                let amountOfBoidsAtCurrentLocation = Int(round(density * densityMultiplier))
-
-                (0..<amountOfBoidsAtCurrentLocation).forEach { _ in
-                    let boidX = Float(x) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
-                    let boidY = Float(y) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
-
-                    boids.append(
-                        Boid(
-                            position: (boidX, boidY, 0),
-                            velocity: (0, 0, 0),
-                            acceleration: (0, 0, 0)
+                        boids.append(
+                            Boid(
+                                position: (boidX, boidY, 0),
+                                velocity: (0, 0, 0)
+                            )
                         )
-                    )
+                    }
                 }
             }
+
+            print("Generated \(boids.count) boids")
+
+            return boids
+        @unknown default:
+            fatalError("Unknown spawn type")
         }
-
-        print("Generated \(boids.count) boids")
-
-        return boids
     }
 }
 
@@ -263,22 +334,30 @@ extension FlockViewController: MTKViewDelegate {
         boidGeometryCommandEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
         boidGeometryCommandEncoder.endEncoding()
 
-        // Render triangles
+        // Prepare for rendering
         let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)!
+
+        // Render triangles
         renderEncoder.label = "Triangle Encoder"
         renderEncoder.setRenderPipelineState(pipelineState)
         renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: boidData.count * 3, instanceCount: 1)
-        renderEncoder.endEncoding()
+
+        // Render interactionNodes
+        renderEncoder.label = "Interaction Encoder"
+        renderEncoder.setRenderPipelineState(interactionPipelineState)
+        renderEncoder.setVertexBuffer(interactionBuffer, offset: 0, index: 0)
+        renderEncoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: interactionData.count, instanceCount: 1)
 
         // Finish up
+        renderEncoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
-//        commandBuffer.waitUntilCompleted()
     }
 
     func encodeBoidPipelines(onCommandBuffer commandBuffer: MTLCommandBuffer) {
         var boidCount: UInt = UInt(boidData.count)
+        var interactionCount: UInt = UInt(interactionData.count)
 
         boidPipelines.forEach { boidPipeline in
             let boidFlockingCommandEncoder = commandBuffer.makeComputeCommandEncoder()!
@@ -286,7 +365,9 @@ extension FlockViewController: MTKViewDelegate {
 
             boidFlockingCommandEncoder.setBuffer(boidBuffer, offset: 0, index: 0)
             boidFlockingCommandEncoder.setBytes(&boidCount, length: MemoryLayout.size(ofValue: boidCount), index: 1)
-            boidFlockingCommandEncoder.setBuffer(settingsBuffer, offset: 0, index: 2)
+            boidFlockingCommandEncoder.setBuffer(interactionBuffer, offset: 0, index: 2)
+            boidFlockingCommandEncoder.setBytes(&interactionCount, length: MemoryLayout.size(ofValue: interactionCount), index: 3)
+            boidFlockingCommandEncoder.setBuffer(settingsBuffer, offset: 0, index: 4)
 
             let (threadsPerGrid, threadsPerThreadgroup) = gridParams(for: boidGeometryPipelineState)
             boidFlockingCommandEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
