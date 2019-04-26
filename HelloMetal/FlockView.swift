@@ -35,10 +35,28 @@ enum BoidSpawnType {
     case centered
 }
 
+enum CursorMode: Equatable {
+    case draw
+    case spawn(team: UInt32)
+}
+
 struct Boid {
     let position: (Float, Float, Float)
     let velocity: (Float, Float, Float)
-    let maxVelocity: Float = 2.1 + pow(Float.random(in: 0...0.25), 2)
+    let maxVelocity: Float
+    let teamID: UInt32
+
+    init(
+        position: (Float, Float, Float) = (0, 0, 0),
+        velocity: (Float, Float, Float) = (0, 0, 0),
+        maxVelocity: Float = 2.1 + pow(Float.random(in: 0...0.75), 2),
+        teamID: UInt32 = UInt32.random(in: 0...1)
+    ) {
+        self.position = position
+        self.velocity = velocity
+        self.maxVelocity = maxVelocity
+        self.teamID = teamID
+    }
 
     static func random() -> Boid {
         return Boid(
@@ -48,9 +66,23 @@ struct Boid {
     }
 }
 
+struct VertexIn {
+    let position: (Float, Float, Float)
+    let speed: Float
+    let teamID: UInt32
+
+    static var zero: VertexIn {
+        return VertexIn(position: (0, 0, 0), speed: 0, teamID: 0)
+    }
+}
+
 struct InteractionNode {
     var position: (Float, Float, Float)
     var repulsionStrength: Float
+}
+
+struct GlobalSettings {
+
 }
 
 struct Settings {
@@ -61,23 +93,35 @@ struct Settings {
     let separationStrength: Float
     let cohesionStrength: Float
     let alignmentStrength: Float
+    let teamStrength: Float
+
+    let teamsEnabled: Bool
+    let wrapEnabled: Bool
 
     init(
-        separationStrength: Float = 0.001,
-        cohesionStrength: Float = 0.001,
-        alignmentStrength: Float = 0.001,
+        separationStrength: Float = 1,
+        cohesionStrength: Float = 1,
+        alignmentStrength: Float = 1,
+        teamStrength: Float = 1,
 
-        separationRange: Float = 0.01,
-        cohesionRange: Float = 0.05,
-        alignmentRange: Float = 0.04
+        separationRange: Float = 1,
+        cohesionRange: Float = 1,
+        alignmentRange: Float = 1,
+
+        teamsEnabled: Bool = false,
+        wrapEnabled: Bool = false
     ) {
         self.separationStrength = separationStrength
         self.cohesionStrength = cohesionStrength
         self.alignmentStrength = alignmentStrength
+        self.teamStrength = teamStrength
 
         self.separationRange = separationRange
         self.cohesionRange = cohesionRange
         self.alignmentRange = alignmentRange
+
+        self.teamsEnabled = teamsEnabled
+        self.wrapEnabled = wrapEnabled
     }
 }
 
@@ -91,7 +135,7 @@ class FlockViewController: UIViewController {
     private var boidPipelines: [MTLComputePipelineState] = []
 
     private var boidData: [Boid]
-    private var vertexData: [Float]
+    private var vertexData: [VertexIn]
     private var interactionData: [InteractionNode] {
         didSet {
             let interactionDataSize = interactionData.count * MemoryLayout.size(ofValue: interactionData[0])
@@ -110,13 +154,14 @@ class FlockViewController: UIViewController {
 
     let metalView: MTKView
     var spawnType: BoidSpawnType = .centered
+    var cursorMode: CursorMode = .spawn(team: 1)
 
     public init() {
         device = MTLCreateSystemDefaultDevice()!
         commandQueue = device.makeCommandQueue()!
 
         boidData = FlockViewController.generateBoidData(spawnType: spawnType)
-        vertexData = Array(repeating: 0.0, count: boidData.count * 12)
+        vertexData = Array(repeating: 0, count: boidData.count * 3).map { _ in VertexIn.zero }
         interactionData = [InteractionNode(position: (1, 2, 0), repulsionStrength: 1)]
 
         settings = Settings()
@@ -159,46 +204,61 @@ class FlockViewController: UIViewController {
         metalView.delegate = self
         metalView.preferredFramesPerSecond = 120
         metalView.clearColor = MTLClearColor(
-                    red: 1.0,
-                    green: 241.0 / 256.0,
-                    blue: 170.0 / 256.0,
-                    alpha: 1.0)
+            red: 38 / 256.0,
+            green: 50 / 256.0,
+            blue: 56 / 256.0,
+            alpha: 1.0)
 
         setupSettings()
     }
 
     @objc func resetBoids() {
-        // Reset boids
         boidData = FlockViewController.generateBoidData(spawnType: spawnType)
+        reloadBoids()
+    }
+
+    @objc func reloadBoids() {
+        // Reset boids
         let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
         boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
 
         // Resize vertex buffer
-        vertexData = Array(repeating: 0.0, count: boidData.count * 12)
+        vertexData = Array(repeating: VertexIn.zero, count: boidData.count * 3)
         let vertexDataSize = vertexData.count * MemoryLayout.size(ofValue: vertexData[0])
         vertexBuffer = device.makeBuffer(bytes: vertexData, length: vertexDataSize, options: [])
     }
 
+    func spawnBoid(at location: (x: Float, y: Float), teamID: UInt32) {
+        boidData.append(Boid(position: (location.x, location.y, 0), teamID: teamID))
+        reloadBoids()
+    }
+
+    var touchLocation: (x: Float, y: Float)?
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchLocation = nil
+    }
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
-        positionInteractionNode(at: touch.location(in: metalView), create: true)
+        touchInteraction(at: touch.location(in: metalView))
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
-        positionInteractionNode(at: touch.location(in: metalView))
+        touchInteraction(at: touch.location(in: metalView))
     }
 
-    func positionInteractionNode(at location: CGPoint, create: Bool = false) {
+    func touchInteraction(at location: CGPoint) {
         let x = location.x / metalView.frame.width * 2 - 1
         let y = -(location.y / metalView.frame.height * 2 - 1)
 
-        if create {
+        touchLocation = (x: Float(x), y: Float(y))
+
+        if cursorMode == .draw {
             interactionData.append(
                 InteractionNode(position: (Float(x), Float(y), 0), repulsionStrength: 1)
             )
-        } else {
-            interactionData[0].position = (Float(x), Float(y), 0)
         }
     }
 
@@ -211,20 +271,77 @@ class FlockViewController: UIViewController {
             settingsView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             settingsView.leftAnchor.constraint(equalTo: view.leftAnchor),
             settingsView.rightAnchor.constraint(equalTo: view.rightAnchor),
-            settingsView.heightAnchor.constraint(equalToConstant: 200)
+            settingsView.heightAnchor.constraint(equalToConstant: 300)
         ])
 
         let reloadButton = UIButton(type: .system)
-        reloadButton.addTarget(self, action: #selector(resetBoids), for: .touchUpInside)
-        reloadButton.setTitle("Reset boids", for: .normal)
-        reloadButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(reloadButton)
+        reloadButton.addTarget(self, action: #selector(reloadBoids), for: .touchUpInside)
+        reloadButton.setTitle("Reload boids", for: .normal)
+
+        let resetButton = UIButton(type: .system)
+        resetButton.addTarget(self, action: #selector(resetBoids), for: .touchUpInside)
+        resetButton.setTitle("Respawn boids", for: .normal)
+
+        let buttonStackView = UIStackView(arrangedSubviews: [reloadButton, resetButton])
+        buttonStackView.spacing = 10
+
+        let spawnTypeControl = UISegmentedControl(items: ["Xplosion", "Perlin", "Single"])
+        spawnTypeControl.selectedSegmentIndex = 0
+        spawnTypeControl.addTarget(self, action: #selector(spawnTypeChanged), for: .valueChanged)
+
+        let cursorMode = UISegmentedControl(items: ["Draw", "Spawn #1", "Spawn #2"])
+        cursorMode.selectedSegmentIndex = 1
+        cursorMode.addTarget(self, action: #selector(cursorModeChanged), for: .valueChanged)
+
+        let paused = UISwitch()
+        paused.addTarget(self, action: #selector(pauseChanged), for: .valueChanged)
+
+        let pausedLabel = UILabel()
+        pausedLabel.text = "Paused"
+        pausedLabel.textColor = .white
+
+        let pauseView = UIStackView(arrangedSubviews: [pausedLabel, paused])
+        pauseView.spacing = 10
+
+        let stackView = UIStackView(arrangedSubviews: [buttonStackView, spawnTypeControl, cursorMode, pauseView])
+        stackView.axis = .vertical
+        stackView.spacing = 10
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stackView)
         view.addConstraints([
-            reloadButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 50),
-            reloadButton.leftAnchor.constraint(equalTo: view.leftAnchor, constant: 50),
-            reloadButton.heightAnchor.constraint(equalToConstant: 50),
-            reloadButton.widthAnchor.constraint(equalToConstant: 100)
+            stackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            stackView.leftAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leftAnchor, constant: 10)
         ])
+    }
+
+    @objc func pauseChanged(pauseSwitch: UISwitch) {
+        metalView.isPaused = pauseSwitch.isOn
+    }
+
+    @objc func cursorModeChanged(control: UISegmentedControl) {
+        switch control.selectedSegmentIndex {
+        case 0:
+            cursorMode = .draw
+        case 1:
+            cursorMode = .spawn(team: 0)
+        case 2:
+            cursorMode = .spawn(team: 1)
+        default:
+            break
+        }
+    }
+
+    @objc func spawnTypeChanged(control: UISegmentedControl) {
+        switch control.selectedSegmentIndex {
+        case 0:
+            spawnType = .centered
+        case 1:
+            spawnType = .perlin
+        case 2:
+            spawnType = .single
+        default:
+            break
+        }
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -241,7 +358,7 @@ class FlockViewController: UIViewController {
     }
 
     static func createSettingsBuffer(from settings: Settings, on device: MTLDevice) -> MTLBuffer {
-        return device.makeBuffer(bytes: [settings], length: MemoryLayout.size(ofValue: settings), options: [])!
+        return device.makeBuffer(bytes: [settings], length: MemoryLayout.stride(ofValue: settings), options: [])!
     }
 
     static func generateBoidData(spawnType: BoidSpawnType) -> [Boid] {
@@ -255,9 +372,12 @@ class FlockViewController: UIViewController {
             let delta: Float = 0.0000001; // 0.01
 
             return (0..<7000).map { _ in
-                Boid(
+                let teamID = UInt32.random(in: 0...1)
+                let maxVelocity = 2.1 + pow(Float.random(in: 0...0.75), 2) + Float(teamID) * 1.5
+                return Boid(
                     position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0),
-                    velocity: (0, 0, 0)
+                    maxVelocity: maxVelocity,
+                    teamID: teamID
                 )
             }
         case .perlin:
@@ -281,12 +401,7 @@ class FlockViewController: UIViewController {
                         let boidX = Float(x) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
                         let boidY = Float(y) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
 
-                        boids.append(
-                            Boid(
-                                position: (boidX, boidY, 0),
-                                velocity: (0, 0, 0)
-                            )
-                        )
+                        boids.append(Boid(position: (boidX, boidY, 0)))
                     }
                 }
             }
@@ -294,8 +409,6 @@ class FlockViewController: UIViewController {
             print("Generated \(boids.count) boids")
 
             return boids
-        @unknown default:
-            fatalError("Unknown spawn type")
         }
     }
 }
@@ -313,6 +426,15 @@ extension FlockViewController: MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
+        if let touchLocation = touchLocation {
+            switch cursorMode {
+            case .spawn(let team):
+                spawnBoid(at: touchLocation, teamID: team)
+            default:
+                break
+            }
+        }
+
         guard let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let renderPassDescriptor = view.currentRenderPassDescriptor else {
@@ -353,6 +475,7 @@ extension FlockViewController: MTKViewDelegate {
         renderEncoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
     }
 
     func encodeBoidPipelines(onCommandBuffer commandBuffer: MTLCommandBuffer) {

@@ -36,16 +36,21 @@ class SettingsView: UIView {
     let separationStrengthSlider = UISlider()
     let cohesionStrengthSlider = UISlider()
     let alignmentStrengthSlider = UISlider()
+    let teamStrengthSlider = UISlider()
 
     let separationRangeSlider = UISlider()
     let cohesionRangeSlider = UISlider()
     let alignmentRangeSlider = UISlider()
+
+    let wrapSwitch = UISwitch()
+    let teamsSwitch = UISwitch()
 
     weak var delegate: SettingsViewDelegate?
 
     init(settings: Settings) {
         super.init(frame: .zero)
 
+        teamStrengthSlider.value = settings.teamStrength
         separationStrengthSlider.value = settings.separationStrength
         cohesionStrengthSlider.value = settings.cohesionStrength
         alignmentStrengthSlider.value = settings.alignmentStrength
@@ -54,19 +59,43 @@ class SettingsView: UIView {
         cohesionRangeSlider.value = settings.cohesionRange
         alignmentRangeSlider.value = settings.alignmentRange
 
-        let sliders: [(String, UISlider, Float)] = [
-            ("Separation", separationStrengthSlider, 0.01),
-            ("Cohesion", cohesionStrengthSlider, 0.01),
-            ("Alignment", alignmentStrengthSlider, 0.01)
+        wrapSwitch.isOn = settings.wrapEnabled
+        teamsSwitch.isOn = settings.teamsEnabled
+
+        let sliders: [(String, UISlider, Float, Float)] = [
+            ("Teams", teamStrengthSlider, -3, 3),
+            ("Separation", separationStrengthSlider, 0, 2),
+            ("Cohesion", cohesionStrengthSlider, 0, 2),
+            ("Alignment", alignmentStrengthSlider, 0, 2)
 //            ("SRange", separationRangeSlider, 1),
 //            ("CRange", cohesionRangeSlider, 1),
 //            ("ARange", alignmentRangeSlider, 1),
         ]
 
-        let sliderStackViews: [UIStackView] = sliders.map {
-            let (label, slider, _) = $0
+        sliders.forEach {
+            $0.1.minimumValue = $0.2
+            $0.1.maximumValue = $0.3
+
+            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragInside)
+            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragOutside)
+        }
+
+        let switches: [(String, UISwitch)] = [
+            ("Teams", teamsSwitch),
+            ("Wrap", wrapSwitch)
+        ]
+
+        switches.forEach {
+            $0.1.addTarget(self, action: #selector(updateSettings), for: .valueChanged)
+        }
+
+        let subViews: [(String, UIView)] = switches.map { ($0.0, $0.1) } + sliders.map { ($0.0, $0.1) }
+
+        let rowStackViews: [UIStackView] = subViews.map {
+            let (label, slider) = $0
             let labelView = UILabel()
             labelView.text = label
+            labelView.textColor = .white
             labelView.widthAnchor.constraint(equalToConstant: 100).isActive = true
 
             let stackView = UIStackView(arrangedSubviews: [labelView, slider])
@@ -74,7 +103,7 @@ class SettingsView: UIView {
             return stackView
         }
 
-        let stackView = UIStackView(arrangedSubviews: sliderStackViews)
+        let stackView = UIStackView(arrangedSubviews: rowStackViews)
         stackView.axis = .vertical
         stackView.distribution = .fillEqually
         stackView.translatesAutoresizingMaskIntoConstraints = false
@@ -83,16 +112,9 @@ class SettingsView: UIView {
             stackView.topAnchor.constraint(equalTo: topAnchor, constant: 20),
             stackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
             stackView.leftAnchor.constraint(equalTo: leftAnchor, constant: 20),
-            stackView.rightAnchor.constraint(equalTo: rightAnchor, constant: -20)
+            stackView.rightAnchor.constraint(lessThanOrEqualTo: rightAnchor, constant: -20),
+            stackView.widthAnchor.constraint(greaterThanOrEqualToConstant: 400)//(equalTo: rightAnchor, constant: -20),
         ])
-
-        sliders.forEach {
-            $0.1.minimumValue = 0
-            $0.1.maximumValue = $0.2
-
-            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragInside)
-            $0.1.addTarget(self, action: #selector(updateSettings), for: .touchDragOutside)
-        }
     }
 
     @objc func updateSettings() {
@@ -100,9 +122,12 @@ class SettingsView: UIView {
             separationStrength: separationStrengthSlider.value,
             cohesionStrength: cohesionStrengthSlider.value,
             alignmentStrength: alignmentStrengthSlider.value,
+            teamStrength: teamStrengthSlider.value,
             separationRange: separationRangeSlider.value,
             cohesionRange: cohesionRangeSlider.value,
-            alignmentRange: alignmentRangeSlider.value)
+            alignmentRange: alignmentRangeSlider.value,
+            teamsEnabled: teamsSwitch.isOn,
+            wrapEnabled: wrapSwitch.isOn)
 
         delegate?.settingsView(self, didUpdateSettings: settings)
     }
