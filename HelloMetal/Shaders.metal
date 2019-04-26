@@ -42,7 +42,12 @@ struct InteractionNode {
     float repulsionStrength;
 };
 
-struct Settings {
+struct GlobalSettings {
+    bool teamsEnabled;
+    bool wrapEnabled;
+};
+
+struct TeamSettings {
     float separationRange;
     float cohesionRange;
     float alignmentRange;
@@ -51,9 +56,7 @@ struct Settings {
     float cohesionStrength;
     float alignmentStrength;
     float teamStrength;
-
-    bool teamsEnabled;
-    bool wrapEnabled;
+    float maximumSpeedMultiplier;
 };
 
 uint boid_id(uint2 gid, uint2 grid_dimensions) {
@@ -84,7 +87,8 @@ kernel void boid_flocking(
         device InteractionNode* interaction_array [[ buffer(2) ]],
         const device uint* interaction_count [[ buffer(3) ]],
 
-        constant Settings &settings [[ buffer(4) ]],
+        constant GlobalSettings &global_settings [[ buffer(4) ]],
+        constant TeamSettings* team_settings_array [[ buffer(5) ]],
 
         uint2 gid [[thread_position_in_grid]],
         uint2 grid_dimensions [[threads_per_grid]])
@@ -93,6 +97,8 @@ kernel void boid_flocking(
     if (id >= *boid_count) return;
 
     // TODO Change the friends every n-th iteration instead of every time
+
+    TeamSettings team_settings = team_settings_array[boid_array[id].teamID];
 
     float width = 2.0;
     float height = 2.0;
@@ -104,8 +110,8 @@ kernel void boid_flocking(
     float cohesionRadius = friendRadius * 5;
     float maxVelocity = boid_array[id].maxVelocity * scale; // 2.1 * scale;
 
-    bool doWrap = settings.wrapEnabled;
-    bool considerTeams = settings.teamsEnabled;
+    bool doWrap = global_settings.wrapEnabled;
+    bool considerTeams = global_settings.teamsEnabled;
 
     // Step 1: Wrap around at the screen edges
     if (doWrap) {
@@ -144,10 +150,12 @@ kernel void boid_flocking(
     float3 alignmentDirection = float3(0, 0, 0);
     float3 separationDirection = float3(0, 0, 0);
     float3 cohesionDirection = float3(0, 0, 0);
+    float3 teamDirection = float3(0, 0, 0);
 
     uint alignmentCount = 0;
     uint separationCount = 0;
     uint cohesionCount = 0;
+    uint teamCount = 0;
 
     for (uint i = 0; i < *boid_count; i++) {
         float d = distance(boid_array[id].position, boid_array[i].position);
@@ -173,12 +181,10 @@ kernel void boid_flocking(
             }
         } else if (d > 0) {
             // Step 3: Calculate team separation
-            bool isChasingTeam = boid_array[id].teamID == 1;
-            float radius = isChasingTeam ? crowdRadius * 5 : crowdRadius;
-            if (d < radius * 1.5 && length(directionVector) > 0) {
-                float settingsMultiplier = isChasingTeam ? settings.teamStrength * 5 : -settings.teamStrength;
-                separationDirection += normalize(directionVector) * falloff(d, radius * 1.5) * 0.5 * settingsMultiplier;
-                separationCount++;
+            float radius = crowdRadius * 1.5;
+            if (d < radius && length(boid_array[id].velocity) > 0) {
+                teamDirection += normalize(directionVector) * falloff(d, avoidRadius);
+                teamCount++;
             }
         }
     }
@@ -204,6 +210,7 @@ kernel void boid_flocking(
     if (alignmentCount > 0) alignmentDirection /= alignmentCount;
     if (separationCount > 0) separationDirection /= separationCount;
     if (repulsionCount > 0) repulsionDirection /= repulsionCount;
+    if (teamCount > 0) teamDirection /= teamCount;
 
     if (cohesionCount > 0) {
         cohesionDirection /= cohesionCount;
@@ -214,10 +221,11 @@ kernel void boid_flocking(
     // Step 7: Calculate noise
 
     // Step 8: Scale calculated values
-    alignmentDirection *= scale * settings.alignmentStrength;
-    separationDirection *= scale * 2 * settings.separationStrength;
-    cohesionDirection *= scale * settings.cohesionStrength;
+    alignmentDirection *= scale * team_settings.alignmentStrength;
+    separationDirection *= scale * team_settings.separationStrength;
+    cohesionDirection *= scale * team_settings.cohesionStrength;
     repulsionDirection *= scale * 35;
+    teamDirection *= scale * team_settings.teamStrength;
 
     // Interlude: Wait for all threads before mutating ourselves
     threadgroup_barrier(mem_flags::mem_device);
@@ -227,16 +235,17 @@ kernel void boid_flocking(
     boid_array[id].velocity += separationDirection;
     boid_array[id].velocity += cohesionDirection;
     boid_array[id].velocity += repulsionDirection;
+    boid_array[id].velocity += teamDirection;
     // TODO Add noise
 
     // Step 10: Limit velocity
-    if (length(boid_array[id].velocity) > maxVelocity * 1.5) {
+    if (length(boid_array[id].velocity) > maxVelocity * 1.5 * team_settings.maximumSpeedMultiplier) {
         boid_array[id].velocity = normalize(boid_array[id].velocity) * maxVelocity;
     }
 
     // Step 11: Apply velocity to position
     boid_array[id].position += boid_array[id].velocity;
-//    boid_array[id].position.z = 0.0;
+    boid_array[id].position.z = 0.0;
 }
 
 struct VertexIn {

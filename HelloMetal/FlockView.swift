@@ -57,13 +57,6 @@ struct Boid {
         self.maxVelocity = maxVelocity
         self.teamID = teamID
     }
-
-    static func random() -> Boid {
-        return Boid(
-            position: (Float.random(in: -1...1), Float.random(in: -1...1), Float.random(in: -1...1)),
-            velocity: (0, 0, 0) // (Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01), Float.random(in: -0.01...0.01)),
-        )
-    }
 }
 
 struct VertexIn {
@@ -82,10 +75,16 @@ struct InteractionNode {
 }
 
 struct GlobalSettings {
+    let teamsEnabled: Bool
+    let wrapEnabled: Bool
 
+    init(teamsEnabled: Bool = true, wrapEnabled: Bool = false) {
+        self.teamsEnabled = teamsEnabled
+        self.wrapEnabled = wrapEnabled
+    }
 }
 
-struct Settings {
+struct TeamSettings {
     let separationRange: Float
     let cohesionRange: Float
     let alignmentRange: Float
@@ -94,34 +93,58 @@ struct Settings {
     let cohesionStrength: Float
     let alignmentStrength: Float
     let teamStrength: Float
-
-    let teamsEnabled: Bool
-    let wrapEnabled: Bool
+    let maximumSpeedMultiplier: Float
 
     init(
         separationStrength: Float = 1,
         cohesionStrength: Float = 1,
         alignmentStrength: Float = 1,
         teamStrength: Float = 1,
+        maximumSpeedMultiplier: Float = 1,
 
         separationRange: Float = 1,
         cohesionRange: Float = 1,
-        alignmentRange: Float = 1,
-
-        teamsEnabled: Bool = false,
-        wrapEnabled: Bool = false
+        alignmentRange: Float = 1
     ) {
         self.separationStrength = separationStrength
         self.cohesionStrength = cohesionStrength
         self.alignmentStrength = alignmentStrength
         self.teamStrength = teamStrength
+        self.maximumSpeedMultiplier = maximumSpeedMultiplier
 
         self.separationRange = separationRange
         self.cohesionRange = cohesionRange
         self.alignmentRange = alignmentRange
+    }
 
-        self.teamsEnabled = teamsEnabled
-        self.wrapEnabled = wrapEnabled
+    static var pleasingExplosion: TeamSettings {
+        return TeamSettings(
+            separationStrength: 1.0,
+            cohesionStrength: 0.8,
+            alignmentStrength: 0.0,
+            teamStrength: 2.9,
+            maximumSpeedMultiplier: 1.0
+        )
+    }
+
+    static var chase: TeamSettings {
+        return TeamSettings(
+            separationStrength: 2.0,
+            cohesionStrength: 0.0,
+            alignmentStrength: 0.0,
+            teamStrength: -1.0,
+            maximumSpeedMultiplier: 1.0
+        )
+    }
+
+    static var flee: TeamSettings {
+        return TeamSettings(
+            separationStrength: 0.7,
+            cohesionStrength: 1.3,
+            alignmentStrength: 1.0,
+            teamStrength: 1.0,
+            maximumSpeedMultiplier: 0.6
+        )
     }
 }
 
@@ -147,10 +170,15 @@ class FlockViewController: UIViewController {
     private var vertexBuffer: MTLBuffer!
     private var interactionBuffer: MTLBuffer!
 
-    private var settings: Settings {
-        didSet { settingsBuffer = FlockViewController.createSettingsBuffer(from: settings, on: device) }
+    private var globalSettings: GlobalSettings {
+        didSet { globalSettingsBuffer = FlockViewController.createGlobalSettingsBuffer(from: globalSettings, on: device) }
     }
-    private var settingsBuffer: MTLBuffer
+    private var globalSettingsBuffer: MTLBuffer
+
+    private var teamSettings: [TeamSettings] {
+        didSet { teamSettingsBuffer = FlockViewController.createTeamSettingsBuffer(from: teamSettings, on: device) }
+    }
+    private var teamSettingsBuffer: MTLBuffer
 
     let metalView: MTKView
     var spawnType: BoidSpawnType = .centered
@@ -164,8 +192,16 @@ class FlockViewController: UIViewController {
         vertexData = Array(repeating: 0, count: boidData.count * 3).map { _ in VertexIn.zero }
         interactionData = [InteractionNode(position: (1, 2, 0), repulsionStrength: 1)]
 
-        settings = Settings()
-        settingsBuffer = FlockViewController.createSettingsBuffer(from: settings, on: device)
+        globalSettings = GlobalSettings()
+        globalSettingsBuffer = FlockViewController.createGlobalSettingsBuffer(from: globalSettings, on: device)
+
+        teamSettings = [
+//            TeamSettings.pleasingExplosion,
+//            TeamSettings.pleasingExplosion
+            TeamSettings.flee,
+            TeamSettings.chase
+        ]
+        teamSettingsBuffer = FlockViewController.createTeamSettingsBuffer(from: teamSettings, on: device)
 
         let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
         boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
@@ -263,7 +299,7 @@ class FlockViewController: UIViewController {
     }
 
     func setupSettings() {
-        let settingsView = SettingsView(settings: settings)
+        let settingsView = SettingsView(globalSettings: globalSettings, teamSettings: teamSettings)
         settingsView.delegate = self
         settingsView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(settingsView)
@@ -271,7 +307,7 @@ class FlockViewController: UIViewController {
             settingsView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             settingsView.leftAnchor.constraint(equalTo: view.leftAnchor),
             settingsView.rightAnchor.constraint(equalTo: view.rightAnchor),
-            settingsView.heightAnchor.constraint(equalToConstant: 300)
+//            settingsView.heightAnchor.constraint(equalToConstant: 300)
         ])
 
         let reloadButton = UIButton(type: .system)
@@ -357,8 +393,12 @@ class FlockViewController: UIViewController {
         boidPipelines.append(try device.makeComputePipelineState(function: boidFunction))
     }
 
-    static func createSettingsBuffer(from settings: Settings, on device: MTLDevice) -> MTLBuffer {
+    static func createGlobalSettingsBuffer(from settings: GlobalSettings, on device: MTLDevice) -> MTLBuffer {
         return device.makeBuffer(bytes: [settings], length: MemoryLayout.stride(ofValue: settings), options: [])!
+    }
+
+    static func createTeamSettingsBuffer(from settings: [TeamSettings], on device: MTLDevice) -> MTLBuffer {
+        return device.makeBuffer(bytes: settings, length: MemoryLayout.stride(ofValue: settings[0]) * settings.count, options: [])!
     }
 
     static func generateBoidData(spawnType: BoidSpawnType) -> [Boid] {
@@ -369,17 +409,18 @@ class FlockViewController: UIViewController {
                 Boid(position: (0, 0, 0), velocity: (0, 0.001, 0))
             ]
         case .centered:
-            let delta: Float = 0.0000001; // 0.01
+            let delta: Float = 0.0000001 // 0.01
+            let teamSizes = [7000, 10] // [4000, 4000] // [7000, 10]
 
-            return (0..<7000).map { _ in
-                let teamID = UInt32.random(in: 0...1)
-                let maxVelocity = 2.1 + pow(Float.random(in: 0...0.75), 2) + Float(teamID) * 1.5
-                return Boid(
-                    position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0),
-                    maxVelocity: maxVelocity,
-                    teamID: teamID
-                )
+            let team1 = (0..<teamSizes[0]).map { _ in
+                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0), teamID: 0)
             }
+
+            let team2 = (0..<teamSizes[1]).map { _ in
+                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0), teamID: 1)
+            }
+
+            return team1 + team2
         case .perlin:
             let gridSize = 50
             let densityMultiplier: Float = 7.0
@@ -414,8 +455,12 @@ class FlockViewController: UIViewController {
 }
 
 extension FlockViewController: SettingsViewDelegate {
-    func settingsView(_ settingsView: SettingsView, didUpdateSettings newSettings: Settings) {
-        self.settings = newSettings
+    func settingsView(_ settingsView: SettingsView, didUpdateTeamSettings newSettings: [TeamSettings]) {
+        teamSettings = newSettings
+    }
+
+    func settingsView(_ settingsView: SettingsView, didUpdateGlobalSettings newSettings: GlobalSettings) {
+        globalSettings = newSettings
     }
 }
 
@@ -490,7 +535,8 @@ extension FlockViewController: MTKViewDelegate {
             boidFlockingCommandEncoder.setBytes(&boidCount, length: MemoryLayout.size(ofValue: boidCount), index: 1)
             boidFlockingCommandEncoder.setBuffer(interactionBuffer, offset: 0, index: 2)
             boidFlockingCommandEncoder.setBytes(&interactionCount, length: MemoryLayout.size(ofValue: interactionCount), index: 3)
-            boidFlockingCommandEncoder.setBuffer(settingsBuffer, offset: 0, index: 4)
+            boidFlockingCommandEncoder.setBuffer(globalSettingsBuffer, offset: 0, index: 4)
+            boidFlockingCommandEncoder.setBuffer(teamSettingsBuffer, offset: 0, index: 5)
 
             let (threadsPerGrid, threadsPerThreadgroup) = gridParams(for: boidGeometryPipelineState)
             boidFlockingCommandEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
