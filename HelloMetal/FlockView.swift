@@ -62,10 +62,11 @@ struct Boid {
 struct VertexIn {
     let position: (Float, Float, Float)
     let speed: Float
+    let heading: Float
     let teamID: UInt32
 
     static var zero: VertexIn {
-        return VertexIn(position: (0, 0, 0), speed: 0, teamID: 0)
+        return VertexIn(position: (0, 0, 0), speed: 0, heading: 0 , teamID: 0)
     }
 }
 
@@ -75,10 +76,14 @@ struct InteractionNode {
 }
 
 struct GlobalSettings {
+    let simulationSpeed: Float
+
     let teamsEnabled: Bool
     let wrapEnabled: Bool
 
-    init(teamsEnabled: Bool = true, wrapEnabled: Bool = false) {
+    init(teamsEnabled: Bool = true, wrapEnabled: Bool = false, simulationSpeed: Float = 1.0) {
+        self.simulationSpeed = simulationSpeed
+
         self.teamsEnabled = teamsEnabled
         self.wrapEnabled = wrapEnabled
     }
@@ -93,14 +98,18 @@ struct TeamSettings {
     let cohesionStrength: Float
     let alignmentStrength: Float
     let teamStrength: Float
+    
     let maximumSpeedMultiplier: Float
+    let boidSize: Float
 
     init(
         separationStrength: Float = 1,
         cohesionStrength: Float = 1,
         alignmentStrength: Float = 1,
         teamStrength: Float = 1,
+
         maximumSpeedMultiplier: Float = 1,
+        boidSize: Float = 1,
 
         separationRange: Float = 1,
         cohesionRange: Float = 1,
@@ -110,7 +119,9 @@ struct TeamSettings {
         self.cohesionStrength = cohesionStrength
         self.alignmentStrength = alignmentStrength
         self.teamStrength = teamStrength
+
         self.maximumSpeedMultiplier = maximumSpeedMultiplier
+        self.boidSize = boidSize
 
         self.separationRange = separationRange
         self.cohesionRange = cohesionRange
@@ -133,17 +144,19 @@ struct TeamSettings {
             cohesionStrength: 0.0,
             alignmentStrength: 0.0,
             teamStrength: -1.0,
-            maximumSpeedMultiplier: 1.0
+            maximumSpeedMultiplier: 1.5,
+            boidSize: 1.5
         )
     }
 
     static var flee: TeamSettings {
         return TeamSettings(
-            separationStrength: 0.7,
-            cohesionStrength: 1.3,
+            separationStrength: 1.0,
+            cohesionStrength: 1.7,
             alignmentStrength: 1.0,
             teamStrength: 1.0,
-            maximumSpeedMultiplier: 0.6
+            maximumSpeedMultiplier: 1.0,
+            boidSize: 0.75
         )
     }
 }
@@ -180,9 +193,12 @@ class FlockViewController: UIViewController {
     }
     private var teamSettingsBuffer: MTLBuffer
 
+    private let gpuLockSempahore = DispatchSemaphore(value: 1)
+
     let metalView: MTKView
     var spawnType: BoidSpawnType = .centered
-    var cursorMode: CursorMode = .spawn(team: 1)
+    var cursorMode: CursorMode = .draw
+    var spawnAmount: Int = 50
 
     public init() {
         device = MTLCreateSystemDefaultDevice()!
@@ -249,11 +265,24 @@ class FlockViewController: UIViewController {
     }
 
     @objc func resetBoids() {
-        boidData = FlockViewController.generateBoidData(spawnType: spawnType)
-        reloadBoids()
+        mutateAndReloadBoids { boids in
+            boids = FlockViewController.generateBoidData(spawnType: spawnType)
+        }
     }
 
     @objc func reloadBoids() {
+        mutateAndReloadBoids()
+    }
+
+    func mutateAndReloadBoids(mutator: (inout [Boid]) -> () = { _ in }) {
+        // Read boids from buffer
+        let boidBufferPointer = boidBuffer.contents().bindMemory(to: Boid.self, capacity: boidData.count)
+        let boidBufferContent = UnsafeBufferPointer(start: boidBufferPointer, count: boidData.count)
+        boidData = Array(boidBufferContent)
+
+        // Optionally mutate boids
+        mutator(&boidData)
+
         // Reset boids
         let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
         boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
@@ -265,8 +294,11 @@ class FlockViewController: UIViewController {
     }
 
     func spawnBoid(at location: (x: Float, y: Float), teamID: UInt32) {
-        boidData.append(Boid(position: (location.x, location.y, 0), teamID: teamID))
-        reloadBoids()
+        mutateAndReloadBoids { boids in
+            (0..<spawnAmount).forEach { _ in
+                boids.append(Boid(position: (location.x, location.y, 0), teamID: teamID))
+            }
+        }
     }
 
     var touchLocation: (x: Float, y: Float)?
@@ -307,7 +339,6 @@ class FlockViewController: UIViewController {
             settingsView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             settingsView.leftAnchor.constraint(equalTo: view.leftAnchor),
             settingsView.rightAnchor.constraint(equalTo: view.rightAnchor),
-//            settingsView.heightAnchor.constraint(equalToConstant: 300)
         ])
 
         let reloadButton = UIButton(type: .system)
@@ -326,7 +357,7 @@ class FlockViewController: UIViewController {
         spawnTypeControl.addTarget(self, action: #selector(spawnTypeChanged), for: .valueChanged)
 
         let cursorMode = UISegmentedControl(items: ["Draw", "Spawn #1", "Spawn #2"])
-        cursorMode.selectedSegmentIndex = 1
+        cursorMode.selectedSegmentIndex = 0
         cursorMode.addTarget(self, action: #selector(cursorModeChanged), for: .valueChanged)
 
         let paused = UISwitch()
@@ -471,14 +502,7 @@ extension FlockViewController: MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
-        if let touchLocation = touchLocation {
-            switch cursorMode {
-            case .spawn(let team):
-                spawnBoid(at: touchLocation, teamID: team)
-            default:
-                break
-            }
-        }
+        gpuLockSempahore.wait()
 
         guard let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer(),
@@ -495,7 +519,8 @@ extension FlockViewController: MTKViewDelegate {
         boidGeometryCommandEncoder.setComputePipelineState(boidGeometryPipelineState)
         boidGeometryCommandEncoder.setBuffer(vertexBuffer, offset: 0, index: 0)
         boidGeometryCommandEncoder.setBuffer(boidBuffer, offset: 0, index: 1)
-        boidGeometryCommandEncoder.setBytes(&boidCount, length: MemoryLayout.size(ofValue: boidCount), index: 2)
+        boidGeometryCommandEncoder.setBuffer(teamSettingsBuffer, offset: 0, index: 2)
+        boidGeometryCommandEncoder.setBytes(&boidCount, length: MemoryLayout.size(ofValue: boidCount), index: 3)
 
         let (threadsPerGrid, threadsPerThreadgroup) = gridParams(for: boidGeometryPipelineState)
         boidGeometryCommandEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
@@ -519,8 +544,18 @@ extension FlockViewController: MTKViewDelegate {
         // Finish up
         renderEncoder.endEncoding()
         commandBuffer.present(drawable)
+        commandBuffer.addCompletedHandler { _ in
+            if let touchLocation = self.touchLocation {
+                switch self.cursorMode {
+                case .spawn(let team):
+                    self.spawnBoid(at: touchLocation, teamID: team)
+                default:
+                    break
+                }
+            }
+            self.gpuLockSempahore.signal()
+        }
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
     }
 
     func encodeBoidPipelines(onCommandBuffer commandBuffer: MTLCommandBuffer) {
@@ -538,7 +573,7 @@ extension FlockViewController: MTKViewDelegate {
             boidFlockingCommandEncoder.setBuffer(globalSettingsBuffer, offset: 0, index: 4)
             boidFlockingCommandEncoder.setBuffer(teamSettingsBuffer, offset: 0, index: 5)
 
-            let (threadsPerGrid, threadsPerThreadgroup) = gridParams(for: boidGeometryPipelineState)
+            let (threadsPerGrid, threadsPerThreadgroup) = gridParams(for: boidPipeline)
             boidFlockingCommandEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
             boidFlockingCommandEncoder.endEncoding()
         }

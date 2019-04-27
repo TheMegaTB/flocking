@@ -27,7 +27,6 @@
 /// THE SOFTWARE.
 
 #include <metal_stdlib>
-#import "./Loki/loki_header.metal"
 using namespace metal;
 
 struct Boid {
@@ -43,6 +42,8 @@ struct InteractionNode {
 };
 
 struct GlobalSettings {
+    float simulationSpeed;
+    
     bool teamsEnabled;
     bool wrapEnabled;
 };
@@ -56,7 +57,9 @@ struct TeamSettings {
     float cohesionStrength;
     float alignmentStrength;
     float teamStrength;
+    
     float maximumSpeedMultiplier;
+    float boidSize;
 };
 
 uint boid_id(uint2 gid, uint2 grid_dimensions) {
@@ -65,10 +68,10 @@ uint boid_id(uint2 gid, uint2 grid_dimensions) {
 
 float3 rotate(float3 vector, float byAngle) {
     return float3(
-                  vector.x * cos(byAngle) - vector.y * sin(byAngle),
-                  vector.x * sin(byAngle) + vector.y * cos(byAngle),
-                  vector.z
-                  );
+        vector.x * cos(byAngle) - vector.y * sin(byAngle),
+        vector.x * sin(byAngle) + vector.y * cos(byAngle),
+        vector.z
+    );
 }
 
 float angle(float3 ofVector) {
@@ -79,6 +82,19 @@ float falloff(float dist, float maximumDistance) {
     float distancePercentage = dist / maximumDistance;
     return 1 - sqrt(distancePercentage);
 }
+
+bool vector_is_not_null(float3 vector) {
+    return vector.x != 0 || vector.y != 0 || vector.z != 0;
+}
+
+__constant float width = 2.0;
+__constant float height = 2.0;
+
+__constant float scale = 0.91 / 1024.0;
+__constant float friendRadius = 60.0 * scale;
+__constant float crowdRadius = friendRadius / 1.3;
+__constant float avoidRadius = 90.0 * scale;
+__constant float cohesionRadius = friendRadius * 5;
 
 kernel void boid_flocking(
         device Boid* boid_array [[ buffer(0) ]],
@@ -96,19 +112,9 @@ kernel void boid_flocking(
     uint id = boid_id(gid, grid_dimensions);
     if (id >= *boid_count) return;
 
-    // TODO Change the friends every n-th iteration instead of every time
-
     TeamSettings team_settings = team_settings_array[boid_array[id].teamID];
 
-    float width = 2.0;
-    float height = 2.0;
-
-    float scale = 0.91 / 1024.0; // / 512;
-    float friendRadius = 60.0 * scale;
-    float crowdRadius = friendRadius / 1.3;
-    float avoidRadius = 90.0 * scale;
-    float cohesionRadius = friendRadius * 5;
-    float maxVelocity = boid_array[id].maxVelocity * scale; // 2.1 * scale;
+    float maxVelocity = boid_array[id].maxVelocity * scale;
 
     bool doWrap = global_settings.wrapEnabled;
     bool considerTeams = global_settings.teamsEnabled;
@@ -163,13 +169,13 @@ kernel void boid_flocking(
 
         if ((!considerTeams || boid_array[id].teamID == boid_array[i].teamID) && d > 0) {
             // Step 2: Calculate alignment
-            if (d < friendRadius && length(boid_array[i].velocity) > 0) {
+            if (d < friendRadius && vector_is_not_null(boid_array[i].velocity) && length(boid_array[i].velocity) > 0) {
                 alignmentDirection += normalize(boid_array[i].velocity) * falloff(d, friendRadius);
                 alignmentCount++;
             }
 
             // Step 3: Calculate separation
-            if (d < crowdRadius && length(directionVector) > 0) {
+            if (d < crowdRadius && vector_is_not_null(directionVector)) {
                 separationDirection += normalize(directionVector) * falloff(d, crowdRadius);
                 separationCount++;
             }
@@ -182,7 +188,7 @@ kernel void boid_flocking(
         } else if (d > 0) {
             // Step 3: Calculate team separation
             float radius = crowdRadius * 1.5;
-            if (d < radius && length(boid_array[id].velocity) > 0) {
+            if (d < radius) {
                 teamDirection += normalize(directionVector) * falloff(d, avoidRadius);
                 teamCount++;
             }
@@ -196,7 +202,7 @@ kernel void boid_flocking(
     for (uint i = 0; i < *interaction_count; i++) {
         float d = abs(distance(boid_array[id].position, interaction_array[i].position));
 
-        if (d > 0 && d < avoidRadius && length(boid_array[id].velocity) > 0) {
+        if (d > 0 && d < avoidRadius && vector_is_not_null(boid_array[id].velocity)) {
             float distanceMultiplier = falloff(d, avoidRadius) * 100;
             float intensity = length(boid_array[id].velocity);
             float3 direction = normalize(boid_array[id].position - interaction_array[i].position);
@@ -221,11 +227,12 @@ kernel void boid_flocking(
     // Step 7: Calculate noise
 
     // Step 8: Scale calculated values
-    alignmentDirection *= scale * team_settings.alignmentStrength;
-    separationDirection *= scale * team_settings.separationStrength;
-    cohesionDirection *= scale * team_settings.cohesionStrength;
-    repulsionDirection *= scale * 35;
-    teamDirection *= scale * team_settings.teamStrength;
+    float calculationScale = scale;
+    alignmentDirection *= calculationScale * team_settings.alignmentStrength;
+    separationDirection *= calculationScale * team_settings.separationStrength;
+    cohesionDirection *= calculationScale * team_settings.cohesionStrength;
+    repulsionDirection *= calculationScale * 35;
+    teamDirection *= calculationScale * team_settings.teamStrength;
 
     // Interlude: Wait for all threads before mutating ourselves
     threadgroup_barrier(mem_flags::mem_device);
@@ -236,28 +243,30 @@ kernel void boid_flocking(
     boid_array[id].velocity += cohesionDirection;
     boid_array[id].velocity += repulsionDirection;
     boid_array[id].velocity += teamDirection;
-    // TODO Add noise
 
     // Step 10: Limit velocity
-    if (length(boid_array[id].velocity) > maxVelocity * 1.5 * team_settings.maximumSpeedMultiplier) {
-        boid_array[id].velocity = normalize(boid_array[id].velocity) * maxVelocity;
+    float maximumVelocity = maxVelocity * team_settings.maximumSpeedMultiplier;
+    if (vector_is_not_null(boid_array[id].velocity) && length(boid_array[id].velocity) > maximumVelocity * 1.5) {
+        boid_array[id].velocity = normalize(boid_array[id].velocity) * maximumVelocity;
     }
 
     // Step 11: Apply velocity to position
-    boid_array[id].position += boid_array[id].velocity;
+    boid_array[id].position += boid_array[id].velocity * global_settings.simulationSpeed;
     boid_array[id].position.z = 0.0;
 }
 
 struct VertexIn {
     packed_float3 position;
-    float speed;
+    float speedPercentage;
+    float heading;
     uint teamID;
 };
 
 kernel void boid_to_triangles(
       device VertexIn* vertex_array [[ buffer(0) ]],
       const device Boid* boid_array [[ buffer(1) ]],
-      const device uint* boid_count [[ buffer(2) ]],
+      const device TeamSettings* team_settings_array [[ buffer(2) ]],
+      const device uint* boid_count [[ buffer(3) ]],
       uint2 gid [[thread_position_in_grid]],
       uint2 grid_dimensions [[threads_per_grid]])
 {
@@ -265,22 +274,27 @@ kernel void boid_to_triangles(
     if (index >= *boid_count) return;
 
     Boid b = boid_array[index];
+    TeamSettings team_settings = team_settings_array[b.teamID];
+    uint output_index = index * 3;
     float3 position = b.position;
 
-    float size = 0.005;
+    float size = 0.005 * team_settings.boidSize;
 
     float3 top = float3(0, size, 0);
     float3 bottomLeft = float3(size / 2, -size, 0);
     float3 bottomRight = float3(-size / 2, -size, 0);
 
-    float heading = angle(b.velocity) - M_PI_2_F;
-    float speed = length(b.velocity);
+    float previousHeading = vertex_array[output_index].heading;
+    float heading = vector_is_not_null(b.velocity) ?  angle(b.velocity) - M_PI_2_F : previousHeading;
+    float speed = vector_is_not_null(b.velocity) ? length(b.velocity) : 0;
     uint team = b.teamID;
 
-    uint output_index = index * 3;
-    vertex_array[output_index] = { position + rotate(top, heading), speed, team }; // float4(position + rotate(top, heading), speed);
-    vertex_array[output_index + 1] = { position + rotate(bottomLeft, heading), speed, team }; // float4(position + rotate(bottomLeft, heading), speed);
-    vertex_array[output_index + 2] = { position + rotate(bottomRight, heading), speed, team }; // float4(position + rotate(bottomRight, heading), speed);
+    float maximumSpeed = boid_array[index].maxVelocity * scale * team_settings.maximumSpeedMultiplier;
+    float speedPercentage = speed / maximumSpeed;
+
+    vertex_array[output_index] = { position + rotate(top, heading), speedPercentage, heading, team };
+    vertex_array[output_index + 1] = { position + rotate(bottomLeft, heading), speedPercentage, heading, team };
+    vertex_array[output_index + 2] = { position + rotate(bottomRight, heading), speedPercentage, heading, team };
 }
 
 
@@ -288,7 +302,7 @@ kernel void boid_to_triangles(
 
 struct VertexOut {
     float4 position [[position]];
-    float speed;
+    float speedPercentage;
     uint teamID;
 };
 
@@ -296,7 +310,7 @@ vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]]
     VertexOut out;
 
     out.position = float4(vertex_array[vid].position, 1.0);
-    out.speed = vertex_array[vid].speed;
+    out.speedPercentage = vertex_array[vid].speedPercentage;
     out.teamID = vertex_array[vid].teamID;
 
     return out;
@@ -311,9 +325,9 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
         base_color = half4(0.9, 0.3, 0.1, 0.0);
     }
 
-    float normalizedSpeed = clamp(in.speed * 200, 0.0, 1.0);
-    float colorMix = pow(normalizedSpeed, 0.7) * 0.5;
-    half4 maximumColor = half4(1, 1, 1, 1);
+//    float normalizedSpeed = clamp(in.speed * 200, 0.0, 1.0);
+    float colorMix = (1 - pow(in.speedPercentage, 0.7)) * 0.5;
+    half4 maximumColor = half4(0, 0, 0, 1);
 
     return half4(
         base_color.x + (maximumColor.x - base_color.x) * colorMix,

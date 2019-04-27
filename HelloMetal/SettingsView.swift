@@ -59,7 +59,9 @@ class TeamSettingsView: UIView {
     let cohesionStrengthSlider = UISlider()
     let alignmentStrengthSlider = UISlider()
     let teamStrengthSlider = UISlider()
+
     let speedSlider = UISlider()
+    let sizeSlider = UISlider()
 
     let separationRangeSlider = UISlider()
     let cohesionRangeSlider = UISlider()
@@ -72,16 +74,6 @@ class TeamSettingsView: UIView {
         currentSettings = settings
         super.init(frame: .zero)
 
-        teamStrengthSlider.value = settings.teamStrength
-        separationStrengthSlider.value = settings.separationStrength
-        cohesionStrengthSlider.value = settings.cohesionStrength
-        alignmentStrengthSlider.value = settings.alignmentStrength
-        speedSlider.value = settings.maximumSpeedMultiplier
-
-        separationRangeSlider.value = settings.separationRange
-        cohesionRangeSlider.value = settings.cohesionRange
-        alignmentRangeSlider.value = settings.alignmentRange
-
         let stackView = createStackView()
         stackView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stackView)
@@ -91,6 +83,18 @@ class TeamSettingsView: UIView {
             stackView.leftAnchor.constraint(equalTo: leftAnchor),
             stackView.rightAnchor.constraint(equalTo: rightAnchor)
         ])
+
+        teamStrengthSlider.value = settings.teamStrength
+        separationStrengthSlider.value = settings.separationStrength
+        cohesionStrengthSlider.value = settings.cohesionStrength
+        alignmentStrengthSlider.value = settings.alignmentStrength
+
+        speedSlider.value = settings.maximumSpeedMultiplier
+        sizeSlider.value = settings.boidSize
+
+        separationRangeSlider.value = settings.separationRange
+        cohesionRangeSlider.value = settings.cohesionRange
+        alignmentRangeSlider.value = settings.alignmentRange
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -99,14 +103,15 @@ class TeamSettingsView: UIView {
 
     func createStackView() -> UIStackView {
         let sliders: [(String, UISlider, Float, Float)] = [
-            ("Teams", teamStrengthSlider, -3, 3),
+            ("Teams", teamStrengthSlider, -3.0, 3.0),
             ("Speed", speedSlider, 0, 3),
+            ("Size", sizeSlider, 0, 2),
             ("Separation", separationStrengthSlider, 0, 2),
             ("Cohesion", cohesionStrengthSlider, 0, 2),
             ("Alignment", alignmentStrengthSlider, 0, 2)
-            //            ("SRange", separationRangeSlider, 1),
-            //            ("CRange", cohesionRangeSlider, 1),
-            //            ("ARange", alignmentRangeSlider, 1),
+//            ("SRange", separationRangeSlider, 1),
+//            ("CRange", cohesionRangeSlider, 1),
+//            ("ARange", alignmentRangeSlider, 1),
         ]
 
         sliders.forEach {
@@ -126,17 +131,21 @@ class TeamSettingsView: UIView {
             cohesionStrength: cohesionStrengthSlider.value,
             alignmentStrength: alignmentStrengthSlider.value,
             teamStrength: teamStrengthSlider.value,
+
             maximumSpeedMultiplier: speedSlider.value,
+            boidSize: sizeSlider.value,
+
             separationRange: separationRangeSlider.value,
             cohesionRange: cohesionRangeSlider.value,
             alignmentRange: alignmentRangeSlider.value
         )
-        print(currentSettings)
         onUpdate?()
     }
 }
 
 class GlobalSettingsView: UIView {
+    let simulationSpeedSlider = UISlider()
+
     let wrapSwitch = UISwitch()
     let teamsSwitch = UISwitch()
 
@@ -147,9 +156,6 @@ class GlobalSettingsView: UIView {
         currentSettings = settings
         super.init(frame: .zero)
 
-        wrapSwitch.isOn = settings.wrapEnabled
-        teamsSwitch.isOn = settings.teamsEnabled
-
         let stackView = createStackView()
         stackView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stackView)
@@ -159,6 +165,11 @@ class GlobalSettingsView: UIView {
             stackView.leftAnchor.constraint(equalTo: leftAnchor),
             stackView.rightAnchor.constraint(equalTo: rightAnchor)
         ])
+
+        simulationSpeedSlider.value = settings.simulationSpeed
+
+        wrapSwitch.isOn = settings.wrapEnabled
+        teamsSwitch.isOn = settings.teamsEnabled
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -175,11 +186,27 @@ class GlobalSettingsView: UIView {
             $0.1.addTarget(self, action: #selector(onSettingsUpdate), for: .valueChanged)
         }
 
-        return labelledStackView(fromViews: switches.map { ($0.0, $0.1) })
+        let sliders: [(String, UISlider, Float, Float)] = [
+            ("Sim-speed", simulationSpeedSlider, 0, 2),
+        ]
+
+        sliders.forEach {
+            $0.1.minimumValue = $0.2
+            $0.1.maximumValue = $0.3
+
+            $0.1.addTarget(self, action: #selector(onSettingsUpdate), for: .touchDragInside)
+            $0.1.addTarget(self, action: #selector(onSettingsUpdate), for: .touchDragOutside)
+        }
+
+        return labelledStackView(fromViews: switches.map { ($0.0, $0.1) } + sliders.map { ($0.0, $0.1) })
     }
 
     @objc func onSettingsUpdate() {
-        currentSettings = GlobalSettings(teamsEnabled: teamsSwitch.isOn, wrapEnabled: wrapSwitch.isOn)
+        currentSettings = GlobalSettings(
+            teamsEnabled: teamsSwitch.isOn,
+            wrapEnabled: wrapSwitch.isOn,
+            simulationSpeed: simulationSpeedSlider.value
+        )
         onUpdate?()
     }
 }

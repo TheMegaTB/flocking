@@ -8,8 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		3058DE2122686FD600CF7E5D /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = 3058DE2022686FD600CF7E5D /* Shaders.metal */; };
-		30954E872268EA2800FC72B1 /* loki.metal in Sources */ = {isa = PBXBuildFile; fileRef = 30954E852268EA2800FC72B1 /* loki.metal */; };
-		30954E882268EA2800FC72B1 /* loki_header.metal in Sources */ = {isa = PBXBuildFile; fileRef = 30954E862268EA2800FC72B1 /* loki_header.metal */; };
 		30DFEE8A22707BDC000AB7E8 /* PerlinGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DFEE8922707BDC000AB7E8 /* PerlinGenerator.swift */; };
 		30DFEE8C227091CE000AB7E8 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DFEE8B227091CE000AB7E8 /* SettingsView.swift */; };
 		30DFEE8E22709A45000AB7E8 /* FlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DFEE8D22709A45000AB7E8 /* FlockView.swift */; };
@@ -22,8 +20,6 @@
 
 /* Begin PBXFileReference section */
 		3058DE2022686FD600CF7E5D /* Shaders.metal */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; tabWidth = 4; usesTabs = 0; };
-		30954E852268EA2800FC72B1 /* loki.metal */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.metal; path = loki.metal; sourceTree = "<group>"; };
-		30954E862268EA2800FC72B1 /* loki_header.metal */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.metal; path = loki_header.metal; sourceTree = "<group>"; };
 		30DFEE8922707BDC000AB7E8 /* PerlinGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerlinGenerator.swift; sourceTree = "<group>"; };
 		30DFEE8B227091CE000AB7E8 /* SettingsView.swift */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; tabWidth = 4; usesTabs = 0; };
 		30DFEE8D22709A45000AB7E8 /* FlockView.swift */ = {isa = PBXFileReference; indentWidth = 4; lastKnownFileType = sourcecode.swift; path = FlockView.swift; sourceTree = "<group>"; tabWidth = 4; };
@@ -47,15 +43,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		30954E842268EA2800FC72B1 /* Loki */ = {
-			isa = PBXGroup;
-			children = (
-				30954E852268EA2800FC72B1 /* loki.metal */,
-				30954E862268EA2800FC72B1 /* loki_header.metal */,
-			);
-			path = Loki;
-			sourceTree = "<group>";
-		};
 		D2A5F1F71F4A9143005CD714 = {
 			isa = PBXGroup;
 			children = (
@@ -85,7 +72,6 @@
 				D2A5F20A1F4A9144005CD714 /* Assets.xcassets */,
 				5C2901821F8F6DE700803663 /* LaunchScreen.storyboard */,
 				D2A5F20F1F4A9144005CD714 /* Info.plist */,
-				30954E842268EA2800FC72B1 /* Loki */,
 				30DFEE8922707BDC000AB7E8 /* PerlinGenerator.swift */,
 				30DFEE8B227091CE000AB7E8 /* SettingsView.swift */,
 			);
@@ -166,11 +152,9 @@
 			files = (
 				30DFEE8C227091CE000AB7E8 /* SettingsView.swift in Sources */,
 				3058DE2122686FD600CF7E5D /* Shaders.metal in Sources */,
-				30954E882268EA2800FC72B1 /* loki_header.metal in Sources */,
 				4374F560213C0EC0006ABEA0 /* ViewController.swift in Sources */,
 				30DFEE8E22709A45000AB7E8 /* FlockView.swift in Sources */,
 				30DFEE8A22707BDC000AB7E8 /* PerlinGenerator.swift in Sources */,
-				30954E872268EA2800FC72B1 /* loki.metal in Sources */,
 				D2A5F2211F4A96D0005CD714 /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
