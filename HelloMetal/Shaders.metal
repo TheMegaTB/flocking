@@ -225,10 +225,11 @@ kernel void boid_flocking(
     }
 
     // Step 7: Calculate noise
+    // TODO Previous implementations were kinda broken since the sum of all noise equals 0 thus the school as a whole didn't move
 
     // Step 8: Scale calculated values
     float calculationScale = scale;
-    alignmentDirection *= calculationScale * team_settings.alignmentStrength;
+    alignmentDirection *= calculationScale * team_settings.alignmentStrength * 0.3;
     separationDirection *= calculationScale * team_settings.separationStrength;
     cohesionDirection *= calculationScale * team_settings.cohesionStrength;
     repulsionDirection *= calculationScale * 35;
@@ -325,9 +326,8 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
         base_color = half4(0.9, 0.3, 0.1, 0.0);
     }
 
-//    float normalizedSpeed = clamp(in.speed * 200, 0.0, 1.0);
     float colorMix = (1 - pow(in.speedPercentage, 0.7)) * 0.5;
-    half4 maximumColor = half4(0, 0, 0, 1);
+    half4 maximumColor = half4(1, 1, 1, 1);
 
     return half4(
         base_color.x + (maximumColor.x - base_color.x) * colorMix,
@@ -335,9 +335,6 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
         base_color.z + (maximumColor.z - base_color.z) * colorMix,
         base_color.w + (maximumColor.w - base_color.w) * colorMix
     );
-
-//    float colorMultiplier = in.speed * 200;
-//    return half4(0.0, colorMultiplier, colorMultiplier, 1.0);
 }
 
 

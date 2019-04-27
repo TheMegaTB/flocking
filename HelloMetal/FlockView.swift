@@ -132,7 +132,7 @@ struct TeamSettings {
         return TeamSettings(
             separationStrength: 1.0,
             cohesionStrength: 0.8,
-            alignmentStrength: 0.0,
+            alignmentStrength: 1.0,
             teamStrength: 2.9,
             maximumSpeedMultiplier: 1.0
         )
@@ -219,13 +219,13 @@ class FlockViewController: UIViewController {
         ]
         teamSettingsBuffer = FlockViewController.createTeamSettingsBuffer(from: teamSettings, on: device)
 
-        let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
+        let boidDataSize = boidData.count * MemoryLayout<Boid>.size
         boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
 
-        let vertexDataSize = vertexData.count * MemoryLayout.size(ofValue: vertexData[0])
+        let vertexDataSize = vertexData.count * MemoryLayout<VertexIn>.size
         vertexBuffer = device.makeBuffer(bytes: vertexData, length: vertexDataSize, options: [])
 
-        let interactionDataSize = interactionData.count * MemoryLayout.size(ofValue: interactionData[0])
+        let interactionDataSize = interactionData.count * MemoryLayout<InteractionNode>.size
         interactionBuffer = device.makeBuffer(bytes: interactionData, length: interactionDataSize, options: [])
 
         let defaultLibrary = device.makeDefaultLibrary()!
@@ -441,7 +441,7 @@ class FlockViewController: UIViewController {
             ]
         case .centered:
             let delta: Float = 0.0000001 // 0.01
-            let teamSizes = [7000, 10] // [4000, 4000] // [7000, 10]
+            let teamSizes = [5000, 10]
 
             let team1 = (0..<teamSizes[0]).map { _ in
                 Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0), teamID: 0)
