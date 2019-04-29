@@ -105,7 +105,7 @@ class TeamSettingsView: UIView {
         let sliders: [(String, UISlider, Float, Float)] = [
             ("Teams", teamStrengthSlider, -3.0, 3.0),
             ("Speed", speedSlider, 0, 3),
-            ("Size", sizeSlider, 0, 2),
+            ("Size", sizeSlider, 0, 5),
             ("Separation", separationStrengthSlider, 0, 2),
             ("Cohesion", cohesionStrengthSlider, 0, 2),
             ("Alignment", alignmentStrengthSlider, 0, 2)

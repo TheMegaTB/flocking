@@ -29,6 +29,37 @@
 import UIKit
 import MetalKit
 
+let boundaryCorners: [(Float, Float, Float)] = [
+    (-1, 1, 1),
+    (-1, -1, 1),
+    (1, -1, 1),
+    (1, 1, 1),
+    (-1, 1, -1),
+    (1, 1, -1),
+    (-1, -1, -1),
+    (1, -1, -1)
+]
+
+let boundaryEdges: [(Float, Float, Float)] = [
+    boundaryCorners[0], boundaryCorners[1],
+    boundaryCorners[0], boundaryCorners[3],
+    boundaryCorners[0], boundaryCorners[4],
+
+    boundaryCorners[2], boundaryCorners[1],
+    boundaryCorners[2], boundaryCorners[3],
+    boundaryCorners[2], boundaryCorners[7],
+
+    boundaryCorners[6], boundaryCorners[1],
+    boundaryCorners[6], boundaryCorners[4],
+    boundaryCorners[6], boundaryCorners[7],
+
+    boundaryCorners[5], boundaryCorners[3],
+    boundaryCorners[5], boundaryCorners[4],
+    boundaryCorners[5], boundaryCorners[7]
+]
+
+let boundaryData: [Float] = boundaryEdges.flatMap { [$0.0, $0.1, $0.2] }
+
 enum BoidSpawnType {
     case single
     case perlin
@@ -81,7 +112,7 @@ struct GlobalSettings {
     let teamsEnabled: Bool
     let wrapEnabled: Bool
 
-    init(teamsEnabled: Bool = true, wrapEnabled: Bool = false, simulationSpeed: Float = 1.0) {
+    init(teamsEnabled: Bool = false, wrapEnabled: Bool = false, simulationSpeed: Float = 1.0) {
         self.simulationSpeed = simulationSpeed
 
         self.teamsEnabled = teamsEnabled
@@ -128,6 +159,16 @@ struct TeamSettings {
         self.alignmentRange = alignmentRange
     }
 
+    static var uniformExplosion: TeamSettings {
+        return TeamSettings(
+            separationStrength: 2.0,
+            cohesionStrength: 0.0,
+            alignmentStrength: 0.0,
+            teamStrength: 0.0,
+            maximumSpeedMultiplier: 1.0
+        )
+    }
+
     static var pleasingExplosion: TeamSettings {
         return TeamSettings(
             separationStrength: 1.0,
@@ -143,9 +184,9 @@ struct TeamSettings {
             separationStrength: 2.0,
             cohesionStrength: 0.0,
             alignmentStrength: 0.0,
-            teamStrength: -1.0,
+            teamStrength: -1.5,
             maximumSpeedMultiplier: 1.5,
-            boidSize: 1.5
+            boidSize: 3.5
         )
     }
 
@@ -154,7 +195,7 @@ struct TeamSettings {
             separationStrength: 1.0,
             cohesionStrength: 1.7,
             alignmentStrength: 1.0,
-            teamStrength: 1.0,
+            teamStrength: 2.0,
             maximumSpeedMultiplier: 1.0,
             boidSize: 0.75
         )
@@ -165,9 +206,10 @@ class FlockViewController: UIViewController {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue!
 
-    private let pipelineState: MTLRenderPipelineState!
-    private let interactionPipelineState: MTLRenderPipelineState!
-    private let boidGeometryPipelineState: MTLComputePipelineState!
+    private let pipelineState: MTLRenderPipelineState
+    private let boundaryPipelineState: MTLRenderPipelineState
+    private let interactionPipelineState: MTLRenderPipelineState
+    private let boidGeometryPipelineState: MTLComputePipelineState
     private var boidPipelines: [MTLComputePipelineState] = []
 
     private var boidData: [Boid]
@@ -182,6 +224,7 @@ class FlockViewController: UIViewController {
     private var boidBuffer: MTLBuffer!
     private var vertexBuffer: MTLBuffer!
     private var interactionBuffer: MTLBuffer!
+    private var boundaryBuffer: MTLBuffer!
 
     private var globalSettings: GlobalSettings {
         didSet { globalSettingsBuffer = FlockViewController.createGlobalSettingsBuffer(from: globalSettings, on: device) }
@@ -195,27 +238,33 @@ class FlockViewController: UIViewController {
 
     private let gpuLockSempahore = DispatchSemaphore(value: 1)
 
+    private var projectionMatrix: Matrix4!
+
     let metalView: MTKView
     var spawnType: BoidSpawnType = .centered
     var cursorMode: CursorMode = .draw
     var spawnAmount: Int = 50
 
     public init() {
+
         device = MTLCreateSystemDefaultDevice()!
         commandQueue = device.makeCommandQueue()!
 
         boidData = FlockViewController.generateBoidData(spawnType: spawnType)
-        vertexData = Array(repeating: 0, count: boidData.count * 3).map { _ in VertexIn.zero }
+        print(boidData.count * 3 * 4)
+        vertexData = Array(repeating: 0, count: boidData.count * 3 * 4).map { _ in VertexIn.zero }
         interactionData = [InteractionNode(position: (1, 2, 0), repulsionStrength: 1)]
 
         globalSettings = GlobalSettings()
         globalSettingsBuffer = FlockViewController.createGlobalSettingsBuffer(from: globalSettings, on: device)
 
         teamSettings = [
-//            TeamSettings.pleasingExplosion,
-//            TeamSettings.pleasingExplosion
-            TeamSettings.flee,
-            TeamSettings.chase
+//            .uniformExplosion,
+//            .uniformExplosion
+            .flee,
+            .chase
+//            .flee,
+//            .flee
         ]
         teamSettingsBuffer = FlockViewController.createTeamSettingsBuffer(from: teamSettings, on: device)
 
@@ -227,6 +276,10 @@ class FlockViewController: UIViewController {
 
         let interactionDataSize = interactionData.count * MemoryLayout<InteractionNode>.size
         interactionBuffer = device.makeBuffer(bytes: interactionData, length: interactionDataSize, options: [])
+
+        let boundaryDataSize = boundaryData.count * MemoryLayout<Float>.size
+        print(boundaryData.count)
+        boundaryBuffer = device.makeBuffer(bytes: boundaryData, length: boundaryDataSize, options: [])
 
         let defaultLibrary = device.makeDefaultLibrary()!
 
@@ -245,11 +298,20 @@ class FlockViewController: UIViewController {
         interactionPipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
         self.interactionPipelineState = try! device.makeRenderPipelineState(descriptor: interactionPipelineStateDescriptor)
 
+        let boundaryPipelineStateDescriptor = MTLRenderPipelineDescriptor()
+        boundaryPipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "boundary_vertex")
+        boundaryPipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "boundary_fragment")
+        boundaryPipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        self.boundaryPipelineState = try! device.makeRenderPipelineState(descriptor: boundaryPipelineStateDescriptor)
+
         metalView = MTKView(frame: .zero, device: device)
         metalView.framebufferOnly = false
         metalView.autoResizeDrawable = true
 
         super.init(nibName: nil, bundle: nil)
+
+        let bounds = UIScreen.main.bounds
+        projectionMatrix = Matrix4.makePerspectiveViewAngle(angleRad: Matrix4.degrees(toRad: 85.0), aspectRatio: Float(bounds.size.width / bounds.size.height), nearZ: 0.01, farZ: 100.0)
 
         try! addBoidPipelineOfFunction(withName: "boid_flocking", inLibrary: defaultLibrary)
 
@@ -262,6 +324,48 @@ class FlockViewController: UIViewController {
             alpha: 1.0)
 
         setupSettings()
+
+        let panGestureRecognizer = UIPanGestureRecognizer(target: self, action: #selector(panGesture))
+        metalView.addGestureRecognizer(panGestureRecognizer)
+        panGestureRecognizer.delegate = self
+
+        let pinchGestureRecognizer = UIPinchGestureRecognizer(target: self, action: #selector(pinchGesture))
+        metalView.addGestureRecognizer(pinchGestureRecognizer)
+        pinchGestureRecognizer.delegate = self
+
+        updateWorldModelMatrix()
+    }
+
+    private var translation: (Float, Float, Float) = (0, 0, -7) { didSet { updateWorldModelMatrix() }}
+    private var rotation: (Float, Float) = (0, 0) { didSet { updateWorldModelMatrix() } }
+    private var scale: Float = 3 { didSet { updateWorldModelMatrix() } }
+    private var worldModelMatrix = Matrix4()
+
+    func updateWorldModelMatrix() {
+        let matrix = Matrix4()
+        matrix.translate(translation.0, y: translation.1, z: translation.2)
+        matrix.scale(scale, y: scale, z: scale)
+        matrix.rotateAroundX(Matrix4.degrees(toRad: rotation.0), y: Matrix4.degrees(toRad: rotation.1), z: 0)
+        worldModelMatrix = matrix
+    }
+
+    @objc func pinchGesture(recognizer: UIPinchGestureRecognizer) {
+        let scale = recognizer.scale
+        recognizer.scale = 1
+        let delta = (scale - 1) * 0.5
+        self.scale *= Float(delta + 1)
+    }
+
+    @objc func panGesture(recognizer: UIPanGestureRecognizer) {
+        let translation = recognizer.translation(in: self.metalView)
+        recognizer.setTranslation(CGPoint.zero, in: self.metalView)
+
+        if recognizer.numberOfTouches == 1 {
+            rotation = (max(-90, min(rotation.0 + Float(translation.y) * 0.5, 90)), rotation.1 + Float(translation.x) * 0.5)
+        } else if recognizer.numberOfTouches == 2 {
+            self.translation.0 += Float(translation.x) * 0.01
+            self.translation.1 -= Float(translation.y) * 0.01
+        }
     }
 
     @objc func resetBoids() {
@@ -282,13 +386,14 @@ class FlockViewController: UIViewController {
 
         // Optionally mutate boids
         mutator(&boidData)
+        print("Boid count:", boidData.count)
 
         // Reset boids
         let boidDataSize = boidData.count * MemoryLayout.size(ofValue: boidData[0])
         boidBuffer = device.makeBuffer(bytes: boidData, length: boidDataSize, options: [])
 
         // Resize vertex buffer
-        vertexData = Array(repeating: VertexIn.zero, count: boidData.count * 3)
+        vertexData = Array(repeating: VertexIn.zero, count: boidData.count * 3 * 4)
         let vertexDataSize = vertexData.count * MemoryLayout.size(ofValue: vertexData[0])
         vertexBuffer = device.makeBuffer(bytes: vertexData, length: vertexDataSize, options: [])
     }
@@ -324,9 +429,9 @@ class FlockViewController: UIViewController {
         touchLocation = (x: Float(x), y: Float(y))
 
         if cursorMode == .draw {
-            interactionData.append(
-                InteractionNode(position: (Float(x), Float(y), 0), repulsionStrength: 1)
-            )
+//            interactionData.append(
+//                InteractionNode(position: (Float(x), Float(y), 0), repulsionStrength: 1)
+//            )
         }
     }
 
@@ -441,20 +546,20 @@ class FlockViewController: UIViewController {
             ]
         case .centered:
             let delta: Float = 0.0000001 // 0.01
-            let teamSizes = [5000, 10]
+            let teamSizes = [8000, 5]
 
             let team1 = (0..<teamSizes[0]).map { _ in
-                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0), teamID: 0)
+                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), Float.random(in: -delta...delta)), teamID: 0)
             }
 
             let team2 = (0..<teamSizes[1]).map { _ in
-                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), 0), teamID: 1)
+                Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), Float.random(in: -delta...delta)), teamID: 1)
             }
 
             return team1 + team2
         case .perlin:
-            let gridSize = 50
-            let densityMultiplier: Float = 7.0
+            let gridSize = 15
+            let densityMultiplier: Float = 10.0
 
             let maximumOffset = 2.0 / Float(gridSize) / 2 // width of 2 divide by number of cell-spaces
             let noise = PerlinGenerator()
@@ -466,14 +571,17 @@ class FlockViewController: UIViewController {
 
             for x in 0..<gridSize {
                 for y in 0..<gridSize {
-                    let density = abs(noise.perlinNoise(Float(x), y: Float(y), z: 0, t: 0))
-                    let amountOfBoidsAtCurrentLocation = Int(round(density * densityMultiplier))
+                    for z in 0..<gridSize {
+                        let density = abs(noise.perlinNoise(Float(x), y: Float(y), z: Float(z), t: 0))
+                        let amountOfBoidsAtCurrentLocation = Int(round(density * densityMultiplier))
 
-                    (0..<amountOfBoidsAtCurrentLocation).forEach { _ in
-                        let boidX = Float(x) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
-                        let boidY = Float(y) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
+                        (0..<amountOfBoidsAtCurrentLocation).forEach { _ in
+                            let boidX = Float(x) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
+                            let boidY = Float(y) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
+                            let boidZ = Float(z) / Float(gridSize) * 2 - 1 + Float.random(in: -maximumOffset...maximumOffset)
 
-                        boids.append(Boid(position: (boidX, boidY, 0)))
+                            boids.append(Boid(position: (boidX, boidY, boidZ)))
+                        }
                     }
                 }
             }
@@ -503,6 +611,7 @@ extension FlockViewController: MTKViewDelegate {
 
     func draw(in view: MTKView) {
         gpuLockSempahore.wait()
+//        worldModelMatrix.rotateAroundX(Matrix4.degrees(toRad: 0.25), y: 0, z: 0)
 
         guard let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer(),
@@ -528,18 +637,32 @@ extension FlockViewController: MTKViewDelegate {
 
         // Prepare for rendering
         let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)!
+//        renderEncoder.setCullMode(MTLCullMode.back)
+//        renderEncoder.setDepthStencilState(<#T##depthStencilState: MTLDepthStencilState?##MTLDepthStencilState?#>)
 
         // Render triangles
         renderEncoder.label = "Triangle Encoder"
         renderEncoder.setRenderPipelineState(pipelineState)
         renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: boidData.count * 3, instanceCount: 1)
+        renderEncoder.setVertexBytes([worldModelMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 1)
+        renderEncoder.setVertexBytes([projectionMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 2)
+        renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: boidData.count * 3 * 4, instanceCount: 1)
 
         // Render interactionNodes
         renderEncoder.label = "Interaction Encoder"
         renderEncoder.setRenderPipelineState(interactionPipelineState)
         renderEncoder.setVertexBuffer(interactionBuffer, offset: 0, index: 0)
+        renderEncoder.setVertexBytes([worldModelMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 1)
+        renderEncoder.setVertexBytes([projectionMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 2)
         renderEncoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: interactionData.count, instanceCount: 1)
+
+        // Render boundary
+        renderEncoder.label = "Boundary Encoder"
+        renderEncoder.setRenderPipelineState(boundaryPipelineState)
+        renderEncoder.setVertexBuffer(boundaryBuffer, offset: 0, index: 0)
+        renderEncoder.setVertexBytes([worldModelMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 1)
+        renderEncoder.setVertexBytes([projectionMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 2)
+        renderEncoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: boundaryData.count / 3, instanceCount: 1)
 
         // Finish up
         renderEncoder.endEncoding()
@@ -590,5 +713,11 @@ extension FlockViewController: MTKViewDelegate {
                                      depth: 1)
 
         return (threadsPerGrid: threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
+    }
+}
+
+extension FlockViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
     }
 }

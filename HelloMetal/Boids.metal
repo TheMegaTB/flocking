@@ -27,40 +27,8 @@
 /// THE SOFTWARE.
 
 #include <metal_stdlib>
+#include "Structs.metal"
 using namespace metal;
-
-struct Boid {
-    packed_float3 position;
-    packed_float3 velocity;
-    float maxVelocity;
-    uint teamID;
-};
-
-struct InteractionNode {
-    packed_float3 position;
-    float repulsionStrength;
-};
-
-struct GlobalSettings {
-    float simulationSpeed;
-    
-    bool teamsEnabled;
-    bool wrapEnabled;
-};
-
-struct TeamSettings {
-    float separationRange;
-    float cohesionRange;
-    float alignmentRange;
-
-    float separationStrength;
-    float cohesionStrength;
-    float alignmentStrength;
-    float teamStrength;
-    
-    float maximumSpeedMultiplier;
-    float boidSize;
-};
 
 uint boid_id(uint2 gid, uint2 grid_dimensions) {
     return gid.y * grid_dimensions.x + gid.x;
@@ -80,7 +48,7 @@ float angle(float3 ofVector) {
 
 float falloff(float dist, float maximumDistance) {
     float distancePercentage = dist / maximumDistance;
-    return 1 - sqrt(distancePercentage);
+    return (1 - sqrt(distancePercentage)) * 2;
 }
 
 bool vector_is_not_null(float3 vector) {
@@ -89,6 +57,7 @@ bool vector_is_not_null(float3 vector) {
 
 __constant float width = 2.0;
 __constant float height = 2.0;
+__constant float depth = 2.0;
 
 __constant float scale = 0.91 / 1024.0;
 __constant float friendRadius = 60.0 * scale;
@@ -136,7 +105,15 @@ kernel void boid_flocking(
         while (boid_array[id].position.y < -(height / 2)) {
             boid_array[id].position.y += height;
         }
-    } else {
+
+        while (boid_array[id].position.z > depth / 2) {
+            boid_array[id].position.z -= depth;
+        }
+
+        while (boid_array[id].position.z < -(depth / 2)) {
+            boid_array[id].position.z += depth;
+        }
+    } else if (!doWrap) {
         if (boid_array[id].position.x > width / 2) {
             boid_array[id].position.x = width / 2;
             boid_array[id].velocity.x *= -1.0;
@@ -149,6 +126,12 @@ kernel void boid_flocking(
         } else if (boid_array[id].position.y < -(height / 2)) {
             boid_array[id].position.y = -(height / 2);
             boid_array[id].velocity.y *= -1.0;
+        } else if (boid_array[id].position.z > depth / 2) {
+            boid_array[id].position.z = depth / 2;
+            boid_array[id].velocity.z *= -1.0;
+        } else if (boid_array[id].position.z < -(depth / 2)) {
+            boid_array[id].position.z = -(depth / 2);
+            boid_array[id].velocity.z *= -1.0;
         }
     }
 
@@ -164,12 +147,12 @@ kernel void boid_flocking(
     uint teamCount = 0;
 
     for (uint i = 0; i < *boid_count; i++) {
-        float d = distance(boid_array[id].position, boid_array[i].position);
         float3 directionVector = boid_array[id].position - boid_array[i].position;
+        float d = sqrt(directionVector.x*directionVector.x + directionVector.y*directionVector.y + directionVector.z*directionVector.z);
 
         if ((!considerTeams || boid_array[id].teamID == boid_array[i].teamID) && d > 0) {
             // Step 2: Calculate alignment
-            if (d < friendRadius && vector_is_not_null(boid_array[i].velocity) && length(boid_array[i].velocity) > 0) {
+            if (d < friendRadius && length_squared(boid_array[i].velocity) > 0) {
                 alignmentDirection += normalize(boid_array[i].velocity) * falloff(d, friendRadius);
                 alignmentCount++;
             }
@@ -187,9 +170,10 @@ kernel void boid_flocking(
             }
         } else if (d > 0) {
             // Step 3: Calculate team separation
-            float radius = crowdRadius * 1.5;
+            float radius = boid_array[id].teamID == 1 ? crowdRadius * 15 : crowdRadius * 2.5;
+//            float radius = crowdRadius * 1.5;
             if (d < radius) {
-                teamDirection += normalize(directionVector) * falloff(d, avoidRadius);
+                teamDirection += normalize(directionVector)  * falloff(d, radius);
                 teamCount++;
             }
         }
@@ -229,7 +213,7 @@ kernel void boid_flocking(
 
     // Step 8: Scale calculated values
     float calculationScale = scale;
-    alignmentDirection *= calculationScale * team_settings.alignmentStrength * 0.3;
+    alignmentDirection *= calculationScale * team_settings.alignmentStrength; // * 0.3;
     separationDirection *= calculationScale * team_settings.separationStrength;
     cohesionDirection *= calculationScale * team_settings.cohesionStrength;
     repulsionDirection *= calculationScale * 35;
@@ -253,7 +237,6 @@ kernel void boid_flocking(
 
     // Step 11: Apply velocity to position
     boid_array[id].position += boid_array[id].velocity * global_settings.simulationSpeed;
-    boid_array[id].position.z = 0.0;
 }
 
 struct VertexIn {
@@ -262,6 +245,15 @@ struct VertexIn {
     float heading;
     uint teamID;
 };
+
+float3x3 rotationMatrix(float3 direction) {
+    if (!vector_is_not_null(direction)) return float3x3(1);
+
+    float3 rotationZ = direction;
+    float3 rotationX = normalize(cross(float3(0, 1, 0), rotationZ));
+    float3 rotationY = normalize(cross(rotationZ, rotationX));
+    return float3x3({ rotationX, rotationY, rotationZ });
+}
 
 kernel void boid_to_triangles(
       device VertexIn* vertex_array [[ buffer(0) ]],
@@ -276,14 +268,10 @@ kernel void boid_to_triangles(
 
     Boid b = boid_array[index];
     TeamSettings team_settings = team_settings_array[b.teamID];
-    uint output_index = index * 3;
+    uint output_index = index * 3 * 4;
     float3 position = b.position;
 
     float size = 0.005 * team_settings.boidSize;
-
-    float3 top = float3(0, size, 0);
-    float3 bottomLeft = float3(size / 2, -size, 0);
-    float3 bottomRight = float3(-size / 2, -size, 0);
 
     float previousHeading = vertex_array[output_index].heading;
     float heading = vector_is_not_null(b.velocity) ?  angle(b.velocity) - M_PI_2_F : previousHeading;
@@ -293,9 +281,29 @@ kernel void boid_to_triangles(
     float maximumSpeed = boid_array[index].maxVelocity * scale * team_settings.maximumSpeedMultiplier;
     float speedPercentage = speed / maximumSpeed;
 
-    vertex_array[output_index] = { position + rotate(top, heading), speedPercentage, heading, team };
-    vertex_array[output_index + 1] = { position + rotate(bottomLeft, heading), speedPercentage, heading, team };
-    vertex_array[output_index + 2] = { position + rotate(bottomRight, heading), speedPercentage, heading, team };
+    float3 normalizedVelocity = vector_is_not_null(b.velocity) ? normalize(b.velocity) : b.velocity;
+    float3x3 lookAtMatrix = rotationMatrix(normalizedVelocity);
+
+    float3 middle = lookAtMatrix * float3(0, 0, 2 * size);
+    float3 top = lookAtMatrix * float3(size, 0, 0);
+    float3 left = lookAtMatrix * float3(0.5 * size, -0.866 * size, 0);
+    float3 right = lookAtMatrix * float3(0.5 * size, 0.866 * size, 0);
+
+    vertex_array[output_index     ] = { top + position, speedPercentage, heading, team };
+    vertex_array[output_index + 1 ] = { left + position, speedPercentage, heading, team };
+    vertex_array[output_index + 2 ] = { right + position, speedPercentage, heading, team };
+
+    vertex_array[output_index + 3 ] = { middle + position, 0.0, heading, team };
+    vertex_array[output_index + 4 ] = { left + position, speedPercentage, heading, team };
+    vertex_array[output_index + 5 ] = { right + position, speedPercentage, heading, team };
+
+    vertex_array[output_index + 6 ] = { middle + position, 0.0, heading, team };
+    vertex_array[output_index + 7 ] = { top + position, speedPercentage, heading, team };
+    vertex_array[output_index + 8 ] = { right + position, speedPercentage, heading, team };
+
+    vertex_array[output_index + 9 ] = { middle + position, 0.0, heading, team };
+    vertex_array[output_index + 10] = { left + position, speedPercentage, heading, team };
+    vertex_array[output_index + 11] = { top + position, speedPercentage, heading, team };
 }
 
 
@@ -307,10 +315,10 @@ struct VertexOut {
     uint teamID;
 };
 
-vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
+vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]], const device float4x4 &world_model_matrix [[ buffer(1) ]], const device float4x4 &projection_matrix [[ buffer(2) ]], unsigned int vid [[ vertex_id ]]) {
     VertexOut out;
+    out.position = projection_matrix * world_model_matrix * float4(vertex_array[vid].position, 1);
 
-    out.position = float4(vertex_array[vid].position, 1.0);
     out.speedPercentage = vertex_array[vid].speedPercentage;
     out.teamID = vertex_array[vid].teamID;
 
@@ -335,25 +343,4 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
         base_color.z + (maximumColor.z - base_color.z) * colorMix,
         base_color.w + (maximumColor.w - base_color.w) * colorMix
     );
-}
-
-
-// MARK: - Interaction render shaders
-
-struct InteractionVertexOut {
-    float4 position [[position]];
-    float size [[point_size]];
-};
-
-vertex InteractionVertexOut interaction_vertex(const device InteractionNode* interaction_array [[ buffer(0) ]], unsigned int vid [[ vertex_id ]]) {
-    InteractionVertexOut out;
-
-    out.position = float4(interaction_array[vid].position.xyz, 1.0);
-    out.size = interaction_array[vid].repulsionStrength + 50;
-
-    return out;
-}
-
-fragment half4 interaction_fragment(InteractionVertexOut in [[stage_in]]) {
-    return half4(1.0, 0, 0, 1.0);
 }
