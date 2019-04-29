@@ -61,3 +61,11 @@ struct TeamSettings {
     float maximumSpeedMultiplier;
     float boidSize;
 };
+
+struct Lighting {
+    packed_float3 color;
+    packed_float3 direction;
+
+    float ambientIntensity;
+    float diffuseIntensity;
+};

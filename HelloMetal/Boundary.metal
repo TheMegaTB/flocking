@@ -30,9 +30,9 @@
 using namespace metal;
 
 vertex float4 boundary_vertex(const device packed_float3* boundary_array [[ buffer(0) ]], const device float4x4 &world_model_matrix [[ buffer(1) ]], const device float4x4 &projection_matrix [[ buffer(2) ]], unsigned int vid [[ vertex_id ]]) {
-  return projection_matrix * world_model_matrix * float4(boundary_array[vid], 1.0);
+    return projection_matrix * world_model_matrix * float4(boundary_array[vid], 1.0);
 }
 
 fragment half4 boundary_fragment(float4 in [[stage_in]]) {
-  return half4(1.0, 1.0, 1.0, 1.0);
+    return half4(1.0, 1.0, 1.0, 1.0);
 }

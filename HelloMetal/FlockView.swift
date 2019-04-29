@@ -71,6 +71,14 @@ enum CursorMode: Equatable {
     case spawn(team: UInt32)
 }
 
+struct Lighting {
+    let color: (Float, Float, Float) = (1, 1, 1)
+    let direction: (Float, Float, Float) = (0, -1, 0)
+
+    let ambientIntensity: Float = 0.1
+    let diffuseIntensity: Float = 0.9
+}
+
 struct Boid {
     let position: (Float, Float, Float)
     let velocity: (Float, Float, Float)
@@ -92,12 +100,13 @@ struct Boid {
 
 struct VertexIn {
     let position: (Float, Float, Float)
+    let normal: (Float, Float, Float)
     let speed: Float
     let heading: Float
     let teamID: UInt32
 
     static var zero: VertexIn {
-        return VertexIn(position: (0, 0, 0), speed: 0, heading: 0 , teamID: 0)
+        return VertexIn(position: (0, 0, 0), normal: (0, 0, 0), speed: 0, heading: 0 , teamID: 0)
     }
 }
 
@@ -181,10 +190,10 @@ struct TeamSettings {
 
     static var chase: TeamSettings {
         return TeamSettings(
-            separationStrength: 2.0,
+            separationStrength: 1.25,
             cohesionStrength: 0.0,
             alignmentStrength: 0.0,
-            teamStrength: -1.5,
+            teamStrength: -0.5,
             maximumSpeedMultiplier: 1.5,
             boidSize: 3.5
         )
@@ -205,6 +214,8 @@ struct TeamSettings {
 class FlockViewController: UIViewController {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue!
+
+    private let depthStencilState: MTLDepthStencilState!
 
     private let pipelineState: MTLRenderPipelineState
     private let boundaryPipelineState: MTLRenderPipelineState
@@ -240,6 +251,8 @@ class FlockViewController: UIViewController {
 
     private var projectionMatrix: Matrix4!
 
+    private let light = Lighting()
+
     let metalView: MTKView
     var spawnType: BoidSpawnType = .centered
     var cursorMode: CursorMode = .draw
@@ -250,8 +263,13 @@ class FlockViewController: UIViewController {
         device = MTLCreateSystemDefaultDevice()!
         commandQueue = device.makeCommandQueue()!
 
+        metalView = MTKView(frame: .zero, device: device)
+        metalView.framebufferOnly = false
+        metalView.autoResizeDrawable = true
+        metalView.colorPixelFormat = .bgra8Unorm_srgb
+        metalView.depthStencilPixelFormat = .depth32Float
+
         boidData = FlockViewController.generateBoidData(spawnType: spawnType)
-        print(boidData.count * 3 * 4)
         vertexData = Array(repeating: 0, count: boidData.count * 3 * 4).map { _ in VertexIn.zero }
         interactionData = [InteractionNode(position: (1, 2, 0), repulsionStrength: 1)]
 
@@ -278,7 +296,6 @@ class FlockViewController: UIViewController {
         interactionBuffer = device.makeBuffer(bytes: interactionData, length: interactionDataSize, options: [])
 
         let boundaryDataSize = boundaryData.count * MemoryLayout<Float>.size
-        print(boundaryData.count)
         boundaryBuffer = device.makeBuffer(bytes: boundaryData, length: boundaryDataSize, options: [])
 
         let defaultLibrary = device.makeDefaultLibrary()!
@@ -286,27 +303,31 @@ class FlockViewController: UIViewController {
         let boidGeometryFunction = defaultLibrary.makeFunction(name: "boid_to_triangles")!
         boidGeometryPipelineState = try! device.makeComputePipelineState(function: boidGeometryFunction)
 
-        let pipelineStateDescriptor = MTLRenderPipelineDescriptor()
-        pipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "boid_vertex")
-        pipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "boid_fragment")
-        pipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        pipelineState = try! device.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "boid_vertex")
+        pipelineDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "boid_fragment")
+        pipelineDescriptor.colorAttachments[0].pixelFormat = metalView.colorPixelFormat
+        pipelineDescriptor.depthAttachmentPixelFormat = metalView.depthStencilPixelFormat
+        pipelineState = try! device.makeRenderPipelineState(descriptor: pipelineDescriptor)
 
         let interactionPipelineStateDescriptor = MTLRenderPipelineDescriptor()
         interactionPipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "interaction_vertex")
         interactionPipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "interaction_fragment")
-        interactionPipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        interactionPipelineStateDescriptor.colorAttachments[0].pixelFormat = metalView.colorPixelFormat
+        interactionPipelineStateDescriptor.depthAttachmentPixelFormat = metalView.depthStencilPixelFormat
         self.interactionPipelineState = try! device.makeRenderPipelineState(descriptor: interactionPipelineStateDescriptor)
 
         let boundaryPipelineStateDescriptor = MTLRenderPipelineDescriptor()
         boundaryPipelineStateDescriptor.vertexFunction = defaultLibrary.makeFunction(name: "boundary_vertex")
         boundaryPipelineStateDescriptor.fragmentFunction = defaultLibrary.makeFunction(name: "boundary_fragment")
-        boundaryPipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        boundaryPipelineStateDescriptor.colorAttachments[0].pixelFormat = metalView.colorPixelFormat
+        boundaryPipelineStateDescriptor.depthAttachmentPixelFormat = metalView.depthStencilPixelFormat
         self.boundaryPipelineState = try! device.makeRenderPipelineState(descriptor: boundaryPipelineStateDescriptor)
 
-        metalView = MTKView(frame: .zero, device: device)
-        metalView.framebufferOnly = false
-        metalView.autoResizeDrawable = true
+        let depthStencilDescriptor = MTLDepthStencilDescriptor()
+        depthStencilDescriptor.depthCompareFunction = .less
+        depthStencilDescriptor.isDepthWriteEnabled = true
+        depthStencilState = device.makeDepthStencilState(descriptor: depthStencilDescriptor)
 
         super.init(nibName: nil, bundle: nil)
 
@@ -316,12 +337,8 @@ class FlockViewController: UIViewController {
         try! addBoidPipelineOfFunction(withName: "boid_flocking", inLibrary: defaultLibrary)
 
         metalView.delegate = self
-        metalView.preferredFramesPerSecond = 120
-        metalView.clearColor = MTLClearColor(
-            red: 38 / 256.0,
-            green: 50 / 256.0,
-            blue: 56 / 256.0,
-            alpha: 1.0)
+        metalView.preferredFramesPerSecond = 60
+//        metalView.clearColor = MTLClearColor(red: 38 / 256.0, green: 50 / 256.0, blue: 56 / 256.0, alpha: 1.0)
 
         setupSettings()
 
@@ -637,8 +654,7 @@ extension FlockViewController: MTKViewDelegate {
 
         // Prepare for rendering
         let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)!
-//        renderEncoder.setCullMode(MTLCullMode.back)
-//        renderEncoder.setDepthStencilState(<#T##depthStencilState: MTLDepthStencilState?##MTLDepthStencilState?#>)
+        renderEncoder.setDepthStencilState(depthStencilState)
 
         // Render triangles
         renderEncoder.label = "Triangle Encoder"
@@ -646,6 +662,7 @@ extension FlockViewController: MTKViewDelegate {
         renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         renderEncoder.setVertexBytes([worldModelMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 1)
         renderEncoder.setVertexBytes([projectionMatrix.raw()], length: MemoryLayout<Float>.size * Matrix4.numberOfElements, index: 2)
+        renderEncoder.setFragmentBytes([light], length: MemoryLayout<Lighting>.size, index: 0)
         renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: boidData.count * 3 * 4, instanceCount: 1)
 
         // Render interactionNodes

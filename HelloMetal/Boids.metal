@@ -158,8 +158,9 @@ kernel void boid_flocking(
             }
 
             // Step 3: Calculate separation
-            if (d < crowdRadius && vector_is_not_null(directionVector)) {
-                separationDirection += normalize(directionVector) * falloff(d, crowdRadius);
+            float separationRange = boid_array[id].teamID == 1 ? crowdRadius * 10 : crowdRadius;
+            if (d < separationRange && vector_is_not_null(directionVector)) {
+                separationDirection += normalize(directionVector) * falloff(d, separationRange);
                 separationCount++;
             }
 
@@ -241,6 +242,7 @@ kernel void boid_flocking(
 
 struct VertexIn {
     packed_float3 position;
+    packed_float3 normal;
     float speedPercentage;
     float heading;
     uint teamID;
@@ -289,21 +291,26 @@ kernel void boid_to_triangles(
     float3 left = lookAtMatrix * float3(0.5 * size, -0.866 * size, 0);
     float3 right = lookAtMatrix * float3(0.5 * size, 0.866 * size, 0);
 
-    vertex_array[output_index     ] = { top + position, speedPercentage, heading, team };
-    vertex_array[output_index + 1 ] = { left + position, speedPercentage, heading, team };
-    vertex_array[output_index + 2 ] = { right + position, speedPercentage, heading, team };
+    float3 normal_bottom = lookAtMatrix * float3(0, 0, -1);
+    float3 normal_top_left = lookAtMatrix * float3(0.485, 0.84, 0.243);
+    float3 normal_top_right = lookAtMatrix * float3(0.485, -0.84, 0.243);
+    float3 normal_left_right = lookAtMatrix * float3(-0.97, 0, 0.25);
 
-    vertex_array[output_index + 3 ] = { middle + position, 0.0, heading, team };
-    vertex_array[output_index + 4 ] = { left + position, speedPercentage, heading, team };
-    vertex_array[output_index + 5 ] = { right + position, speedPercentage, heading, team };
+    vertex_array[output_index     ] = { top + position, normal_bottom, speedPercentage, heading, team };
+    vertex_array[output_index + 1 ] = { left + position, normal_bottom, speedPercentage, heading, team };
+    vertex_array[output_index + 2 ] = { right + position, normal_bottom, speedPercentage, heading, team };
 
-    vertex_array[output_index + 6 ] = { middle + position, 0.0, heading, team };
-    vertex_array[output_index + 7 ] = { top + position, speedPercentage, heading, team };
-    vertex_array[output_index + 8 ] = { right + position, speedPercentage, heading, team };
+    vertex_array[output_index + 3 ] = { middle + position, normal_left_right, 0.0, heading, team };
+    vertex_array[output_index + 4 ] = { left + position, normal_left_right, speedPercentage, heading, team };
+    vertex_array[output_index + 5 ] = { right + position, normal_left_right, speedPercentage, heading, team };
 
-    vertex_array[output_index + 9 ] = { middle + position, 0.0, heading, team };
-    vertex_array[output_index + 10] = { left + position, speedPercentage, heading, team };
-    vertex_array[output_index + 11] = { top + position, speedPercentage, heading, team };
+    vertex_array[output_index + 6 ] = { middle + position, normal_top_right, 0.0, heading, team };
+    vertex_array[output_index + 7 ] = { top + position, normal_top_right, speedPercentage, heading, team };
+    vertex_array[output_index + 8 ] = { right + position, normal_top_right, speedPercentage, heading, team };
+
+    vertex_array[output_index + 9 ] = { middle + position, normal_top_left, 0.0, heading, team };
+    vertex_array[output_index + 10] = { left + position, normal_top_left, speedPercentage, heading, team };
+    vertex_array[output_index + 11] = { top + position, normal_top_left, speedPercentage, heading, team };
 }
 
 
@@ -311,13 +318,16 @@ kernel void boid_to_triangles(
 
 struct VertexOut {
     float4 position [[position]];
+    float3 normal;
     float speedPercentage;
     uint teamID;
 };
 
 vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]], const device float4x4 &world_model_matrix [[ buffer(1) ]], const device float4x4 &projection_matrix [[ buffer(2) ]], unsigned int vid [[ vertex_id ]]) {
     VertexOut out;
+
     out.position = projection_matrix * world_model_matrix * float4(vertex_array[vid].position, 1);
+    out.normal = (world_model_matrix * float4(vertex_array[vid].normal, 0.0)).xyz;
 
     out.speedPercentage = vertex_array[vid].speedPercentage;
     out.teamID = vertex_array[vid].teamID;
@@ -325,7 +335,7 @@ vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]]
     return out;
 }
 
-fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
+fragment half4 boid_fragment(VertexOut in [[stage_in]], const device Lighting &light [[ buffer(0) ]]) {
     half4 base_color = half4(0, 0, 0, 0);
 
     if (in.teamID == 0) {
@@ -334,13 +344,20 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]]) {
         base_color = half4(0.9, 0.3, 0.1, 0.0);
     }
 
-    float colorMix = (1 - pow(in.speedPercentage, 0.7)) * 0.5;
-    half4 maximumColor = half4(1, 1, 1, 1);
+    float4 ambientColor = float4(light.color * light.ambientIntensity, 1);
 
-    return half4(
-        base_color.x + (maximumColor.x - base_color.x) * colorMix,
-        base_color.y + (maximumColor.y - base_color.y) * colorMix,
-        base_color.z + (maximumColor.z - base_color.z) * colorMix,
-        base_color.w + (maximumColor.w - base_color.w) * colorMix
-    );
+    float diffuseFactor = max(0.0, dot(in.normal, float3(light.direction)));
+    float4 diffuseColor = float4(light.color * light.diffuseIntensity * diffuseFactor, 1.0);
+
+    return base_color * half4(ambientColor + diffuseColor);
+
+//    float colorMix = (1 - pow(in.speedPercentage, 0.7)) * 0.5;
+//    half4 maximumColor = half4(1, 1, 1, 1);
+//
+//    return half4(
+//        base_color.x + (maximumColor.x - base_color.x) * colorMix,
+//        base_color.y + (maximumColor.y - base_color.y) * colorMix,
+//        base_color.z + (maximumColor.z - base_color.z) * colorMix,
+//        1.0 // base_color.w + (maximumColor.w - base_color.w) * colorMix
+//    );
 }
