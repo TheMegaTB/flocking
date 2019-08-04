@@ -74,9 +74,11 @@ enum CursorMode: Equatable {
 struct Lighting {
     let color: (Float, Float, Float) = (1, 1, 1)
     let direction: (Float, Float, Float) = (0, -1, 0)
+    let shininess: Float = 10
 
     let ambientIntensity: Float = 0.1
     let diffuseIntensity: Float = 0.9
+    let specularIntensity: Float = 2.0
 }
 
 struct Boid {
@@ -277,10 +279,10 @@ class FlockViewController: UIViewController {
         globalSettingsBuffer = FlockViewController.createGlobalSettingsBuffer(from: globalSettings, on: device)
 
         teamSettings = [
-//            .uniformExplosion,
-//            .uniformExplosion
-            .flee,
-            .chase
+            .uniformExplosion,
+            .uniformExplosion
+//            .flee,
+//            .chase
 //            .flee,
 //            .flee
         ]
@@ -338,7 +340,6 @@ class FlockViewController: UIViewController {
 
         metalView.delegate = self
         metalView.preferredFramesPerSecond = 60
-//        metalView.clearColor = MTLClearColor(red: 38 / 256.0, green: 50 / 256.0, blue: 56 / 256.0, alpha: 1.0)
 
         setupSettings()
 
@@ -369,8 +370,9 @@ class FlockViewController: UIViewController {
     @objc func pinchGesture(recognizer: UIPinchGestureRecognizer) {
         let scale = recognizer.scale
         recognizer.scale = 1
-        let delta = (scale - 1) * 0.5
-        self.scale *= Float(delta + 1)
+        let delta = (scale - 1) // * 0.5
+//        self.scale *= Float(delta + 1)
+        self.translation.2 += Float(delta) * 1.5
     }
 
     @objc func panGesture(recognizer: UIPanGestureRecognizer) {
@@ -563,7 +565,7 @@ class FlockViewController: UIViewController {
             ]
         case .centered:
             let delta: Float = 0.0000001 // 0.01
-            let teamSizes = [8000, 5]
+            let teamSizes = [6000, 6000] // [8000, 5]
 
             let team1 = (0..<teamSizes[0]).map { _ in
                 Boid(position: (Float.random(in: -delta...delta), Float.random(in: -delta...delta), Float.random(in: -delta...delta)), teamID: 0)
@@ -628,7 +630,8 @@ extension FlockViewController: MTKViewDelegate {
 
     func draw(in view: MTKView) {
         gpuLockSempahore.wait()
-//        worldModelMatrix.rotateAroundX(Matrix4.degrees(toRad: 0.25), y: 0, z: 0)
+
+//        rotation.1 += 0.25
 
         guard let drawable = view.currentDrawable,
               let commandBuffer = commandQueue.makeCommandBuffer(),

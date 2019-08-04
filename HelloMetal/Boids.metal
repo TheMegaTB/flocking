@@ -55,15 +55,15 @@ bool vector_is_not_null(float3 vector) {
     return vector.x != 0 || vector.y != 0 || vector.z != 0;
 }
 
-__constant float width = 2.0;
-__constant float height = 2.0;
-__constant float depth = 2.0;
+constant float width = 2.0;
+constant float height = 2.0;
+constant float depth = 2.0;
 
-__constant float scale = 0.91 / 1024.0;
-__constant float friendRadius = 60.0 * scale;
-__constant float crowdRadius = friendRadius / 1.3;
-__constant float avoidRadius = 90.0 * scale;
-__constant float cohesionRadius = friendRadius * 5;
+constant float scale = 0.91 / 1024.0;
+constant float friendRadius = 60.0 * scale;
+constant float crowdRadius = friendRadius / 1.3;
+constant float avoidRadius = 90.0 * scale;
+constant float cohesionRadius = friendRadius * 5;
 
 kernel void boid_flocking(
         device Boid* boid_array [[ buffer(0) ]],
@@ -89,31 +89,32 @@ kernel void boid_flocking(
     bool considerTeams = global_settings.teamsEnabled;
 
     // Step 1: Wrap around at the screen edges
+//    if (false && doWrap) {
+//        while (boid_array[id].position.x > width / 2) {
+//            boid_array[id].position.x -= width;
+//        }
+//
+//        while (boid_array[id].position.x < -(width / 2)) {
+//            boid_array[id].position.x += width;
+//        }
+//
+//        while (boid_array[id].position.y > height / 2) {
+//            boid_array[id].position.y -= height;
+//        }
+//
+//        while (boid_array[id].position.y < -(height / 2)) {
+//            boid_array[id].position.y += height;
+//        }
+//
+//        while (boid_array[id].position.z > depth / 2) {
+//            boid_array[id].position.z -= depth;
+//        }
+//
+//        while (boid_array[id].position.z < -(depth / 2)) {
+//            boid_array[id].position.z += depth;
+//        }
+//    } else if (!doWrap) {
     if (doWrap) {
-        while (boid_array[id].position.x > width / 2) {
-            boid_array[id].position.x -= width;
-        }
-
-        while (boid_array[id].position.x < -(width / 2)) {
-            boid_array[id].position.x += width;
-        }
-
-        while (boid_array[id].position.y > height / 2) {
-            boid_array[id].position.y -= height;
-        }
-
-        while (boid_array[id].position.y < -(height / 2)) {
-            boid_array[id].position.y += height;
-        }
-
-        while (boid_array[id].position.z > depth / 2) {
-            boid_array[id].position.z -= depth;
-        }
-
-        while (boid_array[id].position.z < -(depth / 2)) {
-            boid_array[id].position.z += depth;
-        }
-    } else if (!doWrap) {
         if (boid_array[id].position.x > width / 2) {
             boid_array[id].position.x = width / 2;
             boid_array[id].velocity.x *= -1.0;
@@ -313,12 +314,12 @@ kernel void boid_to_triangles(
     vertex_array[output_index + 11] = { top + position, normal_top_left, speedPercentage, heading, team };
 }
 
-
 // MARK: - Boid render shaders
 
 struct VertexOut {
     float4 position [[position]];
     float3 normal;
+    float3 fragmentPosition;
     float speedPercentage;
     uint teamID;
 };
@@ -328,6 +329,7 @@ vertex VertexOut boid_vertex(const device VertexIn* vertex_array [[ buffer(0) ]]
 
     out.position = projection_matrix * world_model_matrix * float4(vertex_array[vid].position, 1);
     out.normal = (world_model_matrix * float4(vertex_array[vid].normal, 0.0)).xyz;
+    out.fragmentPosition = (world_model_matrix * float4(vertex_array[vid].position, 1.0)).xyz;
 
     out.speedPercentage = vertex_array[vid].speedPercentage;
     out.teamID = vertex_array[vid].teamID;
@@ -349,7 +351,12 @@ fragment half4 boid_fragment(VertexOut in [[stage_in]], const device Lighting &l
     float diffuseFactor = max(0.0, dot(in.normal, float3(light.direction)));
     float4 diffuseColor = float4(light.color * light.diffuseIntensity * diffuseFactor, 1.0);
 
-    return base_color * half4(ambientColor + diffuseColor);
+    float3 eye = normalize(in.fragmentPosition);
+    float3 reflection = reflect(float3(light.direction), in.normal);
+    float specularFactor = pow(max(0.0, dot(reflection, eye)), light.shininess);
+    float4 specularColor = float4(light.color * light.specularIntensity * specularFactor, 1.0);
+
+    return base_color * half4(ambientColor + diffuseColor + specularColor);
 
 //    float colorMix = (1 - pow(in.speedPercentage, 0.7)) * 0.5;
 //    half4 maximumColor = half4(1, 1, 1, 1);

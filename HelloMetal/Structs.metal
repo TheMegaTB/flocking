@@ -65,7 +65,9 @@ struct TeamSettings {
 struct Lighting {
     packed_float3 color;
     packed_float3 direction;
+    float shininess;
 
     float ambientIntensity;
     float diffuseIntensity;
+    float specularIntensity;
 };
